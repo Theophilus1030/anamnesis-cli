@@ -60,7 +60,7 @@ function handleClose() {
       <div class="space-y-4">
         <!-- 句子类型 -->
         <div>
-          <label class="block text-sm text-zinc-400 mb-2">句子类型</label>
+          <label class="block text-base text-zinc-400 mb-2">句子类型</label>
           <div class="flex gap-4">
             <label class="flex items-center gap-2 cursor-pointer">
               <input 
@@ -94,7 +94,7 @@ function handleClose() {
 
         <!-- 正则原文 -->
         <div>
-          <label class="block text-sm text-zinc-400 mb-1">正则原文 (Normalized)</label>
+          <label class="block text-base text-zinc-400 mb-1">正则原文 (Normalized)</label>
           <textarea
             v-model="form.normalized"
             class="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-zinc-100 focus:outline-none focus:border-blue-500 resize-none"
@@ -105,7 +105,7 @@ function handleClose() {
 
         <!-- 英文翻译 -->
         <div>
-          <label class="block text-sm text-zinc-400 mb-1">英文翻译 (English)</label>
+          <label class="block text-base text-zinc-400 mb-1">英文翻译 (English)</label>
           <textarea
             v-model="form.en"
             class="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-zinc-100 focus:outline-none focus:border-blue-500 resize-none"
@@ -116,7 +116,7 @@ function handleClose() {
 
         <!-- 中文翻译 -->
         <div>
-          <label class="block text-sm text-zinc-400 mb-1">中文翻译 (Chinese)</label>
+          <label class="block text-base text-zinc-400 mb-1">中文翻译 (Chinese)</label>
           <textarea
             v-model="form.zh"
             class="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-zinc-100 focus:outline-none focus:border-blue-500 resize-none"
@@ -128,13 +128,13 @@ function handleClose() {
 
       <div class="flex justify-end gap-2 mt-6">
         <button 
-          class="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded text-sm" 
+          class="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded text-base" 
           @click="handleClose"
         >
           取消
         </button>
         <button 
-          class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm" 
+          class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-base" 
           @click="handleSave"
         >
           保存

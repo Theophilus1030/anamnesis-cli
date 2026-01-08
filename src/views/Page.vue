@@ -20,12 +20,12 @@ const tempPoints = ref<number[][]>([]) // 新建模式下正在画的点
 const draggingPointIndex = ref<number | null>(null) // 当前正在拖拽的顶点的索引
 const editSnapshot = ref<string | null>(null) // 进入编辑模式前的数据快照（用于“放弃”操作）
 
-// 样式配置：调大一点点
+// 样式配置
 const STYLE = {
-  lineWidth: 2,         // 原来是 1
-  selectedLineWidth: 3, // 原来是 2
-  pointRadius: 6,       // 原来是 4
-  pointHitRadius: 10,   // 鼠标捕捉半径
+  lineWidth: 2,         
+  selectedLineWidth: 3, 
+  pointRadius: 6,       
+  pointHitRadius: 10,   
   baselineColor: 'rgba(0, 0, 255, 1)',
   baselineSelectedColor: 'rgba(255, 165, 0, 1)', // 橙色高亮基线
 }
@@ -95,6 +95,7 @@ const lines = ref<Line[]>([])
 const regions = ref<Region[]>([])
 const selectedLineId = ref<string | null>(null)
 const selectedGlyphId = ref<string | null>(null)
+const hoveredLineId = ref<string | null>(null)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const imageRef = ref<HTMLImageElement | null>(null)
 const scale = ref(0.5)
@@ -560,6 +561,39 @@ function drawCanvas() {
       ctx.strokeStyle = 'white'
       ctx.lineWidth = 2
       ctx.stroke()
+    }
+  }
+
+  // ============================================================
+  // Layer 5: 悬浮高亮层 (Hover Highlight) - 优先级最高，强制显示
+  // ============================================================
+  if (hoveredLineId.value) {
+    const line = lines.value.find(l => l.id === hoveredLineId.value)
+    if (line && line.polygon.length > 0) {
+      // 1. 绘制多边形
+      ctx.beginPath()
+      ctx.moveTo(line.polygon[0][0], line.polygon[0][1])
+      for (let i = 1; i < line.polygon.length; i++) {
+        ctx.lineTo(line.polygon[i][0], line.polygon[i][1])
+      }
+      ctx.closePath()
+
+      // 样式：高亮青色 (Cyan)
+      ctx.fillStyle = 'rgba(0, 255, 255, 0.2)' // 半透明填充
+      ctx.strokeStyle = 'rgba(0, 255, 255, 1)' // 实线描边
+      ctx.lineWidth = 3
+      ctx.fill()
+      ctx.stroke()
+
+      // 2. 绘制基线 (如果存在) - 叠加显示
+      if (line.baseline && line.baseline.length > 1) {
+        ctx.beginPath()
+        ctx.moveTo(line.baseline[0][0], line.baseline[0][1])
+        for (let i = 1; i < line.baseline.length; i++) ctx.lineTo(line.baseline[i][0], line.baseline[i][1])
+        ctx.strokeStyle = 'rgba(255, 255, 0, 1)' // 黄色基线
+        ctx.lineWidth = 2
+        ctx.stroke()
+      }
     }
   }
 }
@@ -1197,14 +1231,11 @@ function initCanvas() {
 async function saveToBackend() {
   if (!altoXml.value) return
 
-  // 1. 解析原始 XML 为 DOM 对象
   const parser = new DOMParser()
   const doc = parser.parseFromString(altoXml.value, "text/xml")
-
-  // 命名空间处理
+  
   const ns = doc.documentElement.getAttribute('xmlns')
 
-  // 辅助：根据 ID 查找 XML 中的节点
   const findLineNode = (id: string) => {
     let node = doc.getElementById(id)
     if (!node) {
@@ -1216,100 +1247,152 @@ async function saveToBackend() {
     return node
   }
 
-  // 辅助：在指定节点中查找 Glyph
-  const findGlyphNode = (lineNode: Element, glyphId: string) => {
-    const allGlyphs = lineNode.getElementsByTagName('Glyph')
-    for (let i = 0; i < allGlyphs.length; i++) {
-      if (allGlyphs[i].getAttribute('ID') === glyphId) return allGlyphs[i]
-    }
-    return null
-  }
-
-  // 2. 找到 TextBlock
   let textBlock = doc.getElementsByTagName('TextBlock')[0]
   if (!textBlock) {
     console.error("XML 中未找到 TextBlock，无法保存")
     return
   }
 
-  // 3. 遍历前端的数据 (lines.value)，更新 XML
+  // 遍历前端的数据，更新 XML
   lines.value.forEach(lineData => {
     let lineNode = findLineNode(lineData.id)
 
     if (lineNode) {
       // --- 更新已有 Line ---
-
+      
       // 更新 Baseline
       if (lineData.baseline && lineData.baseline.length > 0) {
         lineNode.setAttribute('BASELINE', pointsToString(lineData.baseline))
       } else {
         lineNode.removeAttribute('BASELINE')
       }
-
+      
       // 更新 Polygon
       let shapeNode = lineNode.querySelector(':scope > Shape')
       if (!shapeNode) {
         shapeNode = doc.createElementNS(ns, 'Shape')
         lineNode.insertBefore(shapeNode, lineNode.firstChild)
       }
-
+      
       let polyNode = shapeNode.querySelector(':scope > Polygon')
       if (!polyNode) {
         polyNode = doc.createElementNS(ns, 'Polygon')
         shapeNode.appendChild(polyNode)
       }
-
+      
       polyNode.setAttribute('POINTS', pointsToString(lineData.polygon))
-
-      // --- 更新 Glyphs ---
-      lineData.glyphs.forEach(glyphData => {
-        let glyphNode = findGlyphNode(lineNode as Element, glyphData.id)
-
-        if (glyphNode) {
-          // 更新已有 Glyph
-          glyphNode.setAttribute('CONTENT', glyphData.content)
-          glyphNode.setAttribute('HPOS', String(Math.round(glyphData.hpos)))
-          glyphNode.setAttribute('VPOS', String(Math.round(glyphData.vpos)))
-          glyphNode.setAttribute('WIDTH', String(Math.round(glyphData.width)))
-          glyphNode.setAttribute('HEIGHT', String(Math.round(glyphData.height)))
-        }
-      })
-
-      // 同时更新 String 节点的 CONTENT（拼接所有 Glyph）
-      const stringNodes = lineNode.getElementsByTagName('String')
-      for (let i = 0; i < stringNodes.length; i++) {
-        const stringNode = stringNodes[i]
-        const glyphsInString = stringNode.getElementsByTagName('Glyph')
-        let content = ''
-        for (let j = 0; j < glyphsInString.length; j++) {
-          content += glyphsInString[j].getAttribute('CONTENT') || ''
-        }
-        stringNode.setAttribute('CONTENT', content)
+      
+      // --- 重建 String 和 Glyph 结构 ---
+      // 删除所有现有的 String 节点
+      const existingStrings = Array.from(lineNode.getElementsByTagName('String'))
+      existingStrings.forEach(s => s.parentNode?.removeChild(s))
+      
+      // 删除所有现有的 SP 节点（空格）
+      const existingSPs = Array.from(lineNode.getElementsByTagName('SP'))
+      existingSPs.forEach(s => s.parentNode?.removeChild(s))
+      
+      // 根据前端数据重建 String 和 Glyph
+      // 简化处理：将所有 Glyph 放在一个 String 中
+      if (lineData.glyphs.length > 0) {
+        const newString = doc.createElementNS(ns, 'String')
+        newString.setAttribute('ID', `string_${lineData.id}`)
+        
+        // 计算 String 的边界
+        let minHpos = Infinity, minVpos = Infinity
+        let maxHpos = -Infinity, maxVpos = -Infinity
+        
+        lineData.glyphs.forEach(g => {
+          minHpos = Math.min(minHpos, g.hpos)
+          minVpos = Math.min(minVpos, g.vpos)
+          maxHpos = Math.max(maxHpos, g.hpos + (g.width || 20))
+          maxVpos = Math.max(maxVpos, g.vpos + g.height)
+        })
+        
+        newString.setAttribute('HPOS', String(Math.round(minHpos)))
+        newString.setAttribute('VPOS', String(Math.round(minVpos)))
+        newString.setAttribute('WIDTH', String(Math.round(maxHpos - minHpos)))
+        newString.setAttribute('HEIGHT', String(Math.round(maxVpos - minVpos)))
+        
+        // 拼接内容
+        const content = lineData.glyphs.map(g => g.content).join('')
+        newString.setAttribute('CONTENT', content)
+        newString.setAttribute('WC', '1.0')
+        
+        // 创建 Glyph 节点
+        lineData.glyphs.forEach((glyphData, idx) => {
+          const newGlyph = doc.createElementNS(ns, 'Glyph')
+          newGlyph.setAttribute('ID', glyphData.id || `glyph_${lineData.id}_${idx}`)
+          newGlyph.setAttribute('CONTENT', glyphData.content)
+          newGlyph.setAttribute('HPOS', String(Math.round(glyphData.hpos)))
+          newGlyph.setAttribute('VPOS', String(Math.round(glyphData.vpos)))
+          newGlyph.setAttribute('WIDTH', String(Math.round(glyphData.width || 0)))
+          newGlyph.setAttribute('HEIGHT', String(Math.round(glyphData.height)))
+          newGlyph.setAttribute('GC', '1.0')
+          
+          // 创建 Glyph 的 Shape
+          const glyphShape = doc.createElementNS(ns, 'Shape')
+          const glyphPoly = doc.createElementNS(ns, 'Polygon')
+          // 简单矩形
+          const x = glyphData.hpos
+          const y = glyphData.vpos
+          const w = glyphData.width || 0
+          const h = glyphData.height
+          glyphPoly.setAttribute('POINTS', `${x} ${y} ${x} ${y + h} ${x + w} ${y + h} ${x + w} ${y}`)
+          glyphShape.appendChild(glyphPoly)
+          newGlyph.appendChild(glyphShape)
+          
+          newString.appendChild(newGlyph)
+        })
+        
+        lineNode.appendChild(newString)
       }
-
+      
     } else {
       // --- 新增 Line ---
       const newLine = doc.createElementNS(ns, 'TextLine')
       newLine.setAttribute('ID', lineData.id)
-
+      
       if (lineData.baseline.length > 0) {
         newLine.setAttribute('BASELINE', pointsToString(lineData.baseline))
       }
-
+      
       const newShape = doc.createElementNS(ns, 'Shape')
       const newPoly = doc.createElementNS(ns, 'Polygon')
       newPoly.setAttribute('POINTS', pointsToString(lineData.polygon))
       newShape.appendChild(newPoly)
       newLine.appendChild(newShape)
-
+      
+      // 添加 Glyphs
+      if (lineData.glyphs.length > 0) {
+        const newString = doc.createElementNS(ns, 'String')
+        newString.setAttribute('ID', `string_${lineData.id}`)
+        
+        const content = lineData.glyphs.map(g => g.content).join('')
+        newString.setAttribute('CONTENT', content)
+        
+        lineData.glyphs.forEach((glyphData, idx) => {
+          const newGlyph = doc.createElementNS(ns, 'Glyph')
+          newGlyph.setAttribute('ID', glyphData.id || `glyph_${lineData.id}_${idx}`)
+          newGlyph.setAttribute('CONTENT', glyphData.content)
+          newGlyph.setAttribute('HPOS', String(Math.round(glyphData.hpos)))
+          newGlyph.setAttribute('VPOS', String(Math.round(glyphData.vpos)))
+          newGlyph.setAttribute('WIDTH', String(Math.round(glyphData.width || 0)))
+          newGlyph.setAttribute('HEIGHT', String(Math.round(glyphData.height)))
+          newGlyph.setAttribute('GC', '1.0')
+          newString.appendChild(newGlyph)
+        })
+        
+        newLine.appendChild(newString)
+      }
+      
       textBlock.appendChild(newLine)
     }
   })
 
-  // 4. 处理删除
+  // 处理删除
   const currentIds = new Set(lines.value.map(l => l.id))
   const xmlLines = Array.from(doc.getElementsByTagName('TextLine'))
-
+  
   xmlLines.forEach(node => {
     const id = node.getAttribute('ID')
     if (id && !currentIds.has(id)) {
@@ -1317,13 +1400,12 @@ async function saveToBackend() {
     }
   })
 
-  // 5. 序列化回字符串
+  // 序列化回字符串
   const serializer = new XMLSerializer()
   const newXmlStr = serializer.serializeToString(doc)
 
-  // 6. 更新本地状态并发送给后端
   altoXml.value = newXmlStr
-
+  
   try {
     await invoke('save_alto', { pageId, xml: newXmlStr })
     console.log("保存成功！")
@@ -1457,85 +1539,85 @@ function getGlobalLineOrder(): string[] {
 
 async function handleSplitAfter(lineId: string, glyphIndex: number) {
   if (!sentenceData.value) return
-  
+
   const globalOrder = getGlobalLineOrder()
   const globalIndex = globalOrder.indexOf(lineId)
-  
+
   if (globalIndex === -1 || globalIndex === globalOrder.length - 1) return
-  
+
   const currentLine = lines.value.find(l => l.id === lineId)
   if (!currentLine) return
-  
+
   // 获取下一个 TextLine 的 ID
   const nextLineId = globalOrder[globalIndex + 1]
   const nextLine = lines.value.find(l => l.id === nextLineId)
   if (!nextLine) return
-  
+
   // 获取要移动的 glyphs（glyphIndex 之后的所有字符）
   const glyphsToMove = currentLine.glyphs.slice(glyphIndex + 1)
-  
+
   if (glyphsToMove.length === 0) return
-  
+
   // 更新 lineId
   glyphsToMove.forEach(g => {
     g.lineId = nextLineId
   })
-  
+
   // 从当前行移除
   currentLine.glyphs = currentLine.glyphs.slice(0, glyphIndex + 1)
-  
+
   // 添加到下一行的开头
   nextLine.glyphs = [...glyphsToMove, ...nextLine.glyphs]
-  
+
   saveHistory()
   await saveToBackend()
-  
+
   // 关闭编辑器
   showTextLineEditor.value = false
   editingTextLine.value = null
-  
+
   drawCanvas()
 }
 
 async function handleSplitBefore(lineId: string, glyphIndex: number) {
   if (!sentenceData.value) return
-  
+
   const globalOrder = getGlobalLineOrder()
   const globalIndex = globalOrder.indexOf(lineId)
-  
+
   if (globalIndex === -1 || globalIndex === 0) return
-  
+
   const currentLine = lines.value.find(l => l.id === lineId)
   if (!currentLine) return
-  
+
   // 获取上一个 TextLine 的 ID
   const prevLineId = globalOrder[globalIndex - 1]
   const prevLine = lines.value.find(l => l.id === prevLineId)
   if (!prevLine) return
-  
+
   // 获取要移动的 glyphs（glyphIndex 之前的所有字符，不包括 glyphIndex）
   const glyphsToMove = currentLine.glyphs.slice(0, glyphIndex)
-  
+
   if (glyphsToMove.length === 0) return
-  
+
   // 更新 lineId
   glyphsToMove.forEach(g => {
     g.lineId = prevLineId
   })
-  
+
   // 从当前行移除
   currentLine.glyphs = currentLine.glyphs.slice(glyphIndex)
-  
+
   // 添加到上一行的末尾
   prevLine.glyphs = [...prevLine.glyphs, ...glyphsToMove]
-  
+
   saveHistory()
   await saveToBackend()
-  
+
   // 关闭编辑器
   showTextLineEditor.value = false
   editingTextLine.value = null
-  
+
   drawCanvas()
 }
 
@@ -1559,6 +1641,33 @@ async function handleUpdateSentenceFromEditor(data: { normalized: string; en: st
   }
 }
 
+// 处理拓扑图的更新（拖拽排序、移动、新建等）
+async function handleTopologyUpdate(newSentences: Sentence[]) {
+  if (!sentenceData.value) return
+
+  // 更新本地数据
+  sentenceData.value.sentences = newSentences
+
+  // 保存到数据库
+  await invoke('save_sentence', {
+    pageId,
+    data: JSON.stringify(sentenceData.value)
+  })
+
+  // 强制重绘 Canvas (因为选中状态可能变了)
+  drawCanvas()
+}
+
+function handleLineHover(id: string) {
+  hoveredLineId.value = id
+  drawCanvas()
+}
+
+function handleLineLeave() {
+  hoveredLineId.value = null
+  drawCanvas()
+}
+
 watch([selectedGlyphId, selectedLineId, showBaselines, showPolygons], () => {
   drawCanvas()
 })
@@ -1573,24 +1682,24 @@ onMounted(() => {
   <div class="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col">
     <!-- 工具栏 -->
     <div class="h-12 bg-zinc-900 border-b border-zinc-700 flex items-center px-4 gap-2">
-      <button class="px-3 py-1.5 rounded text-sm font-medium bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
+      <button class="px-3 py-1.5 rounded text-base font-medium bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
         @click="goBack">
         ← 返回
       </button>
 
       <div class="w-px h-6 bg-zinc-700 mx-2"></div>
 
-      <button class="px-3 py-1.5 rounded text-sm font-medium bg-blue-600 text-white hover:bg-blue-500"
+      <button class="px-3 py-1.5 rounded text-base font-medium bg-blue-600 text-white hover:bg-blue-500"
         @click="openMetaModal">
         元信息
       </button>
 
-      <button class="px-3 py-1.5 rounded text-sm font-medium bg-green-600 text-white hover:bg-green-500"
+      <button class="px-3 py-1.5 rounded text-base font-medium bg-green-600 text-white hover:bg-green-500"
         @click="importAlto">
         导入 ALTO
       </button>
       <button :class="[
-        'px-3 py-1.5 rounded text-sm font-medium transition-colors',
+        'px-3 py-1.5 rounded text-base font-medium transition-colors',
         isCreating
           ? 'bg-yellow-600 text-white'
           : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'
@@ -1598,7 +1707,7 @@ onMounted(() => {
         + 新建 Line
       </button>
       <button :class="[
-        'px-3 py-1.5 rounded text-sm font-medium transition-colors',
+        'px-3 py-1.5 rounded text-base font-medium transition-colors',
         targetMissingBaselineId
           ? 'bg-yellow-600 text-white'
           : 'bg-indigo-700 text-zinc-300 hover:bg-indigo-600'
@@ -1608,7 +1717,7 @@ onMounted(() => {
       <div class="w-px h-6 bg-zinc-700 mx-2"></div>
 
       <button :class="[
-        'px-3 py-1.5 rounded text-sm font-medium transition-colors',
+        'px-3 py-1.5 rounded text-base font-medium transition-colors',
         showBaselines
           ? 'bg-blue-600 text-white'
           : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'
@@ -1616,7 +1725,7 @@ onMounted(() => {
         Baselines
       </button>
       <button :class="[
-        'px-3 py-1.5 rounded text-sm font-medium transition-colors',
+        'px-3 py-1.5 rounded text-base font-medium transition-colors',
         showPolygons
           ? 'bg-fuchsia-600 text-white'
           : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'
@@ -1627,7 +1736,7 @@ onMounted(() => {
       <div class="w-px h-6 bg-zinc-700 mx-2"></div>
 
       <button :class="[
-        'px-3 py-1.5 rounded text-sm font-medium transition-colors',
+        'px-3 py-1.5 rounded text-base font-medium transition-colors',
         historyIndex > 0
           ? 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'
           : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
@@ -1635,7 +1744,7 @@ onMounted(() => {
         Undo
       </button>
       <button :class="[
-        'px-3 py-1.5 rounded text-sm font-medium transition-colors',
+        'px-3 py-1.5 rounded text-base font-medium transition-colors',
         historyIndex < history.length - 1
           ? 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'
           : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
@@ -1643,18 +1752,18 @@ onMounted(() => {
         Redo
       </button>
 
-      <div v-if="warning" class="ml-4 px-3 py-1 bg-yellow-600/20 text-yellow-400 rounded text-sm">
+      <div v-if="warning" class="ml-4 px-3 py-1 bg-yellow-600/20 text-yellow-400 rounded text-base">
         ⚠️ {{ warning }}
       </div>
       <button :class="[
-        'px-3 py-1.5 rounded text-sm font-medium transition-colors',
+        'px-3 py-1.5 rounded text-base font-medium transition-colors',
         showTopology
           ? 'bg-purple-600 text-white'
           : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'
       ]" @click="showTopology = !showTopology">
         拓扑关系
       </button>
-      <div class="flex items-center gap-3 text-sm">
+      <div class="flex items-center gap-3 text-base">
         <label class="flex items-center gap-1.5 cursor-pointer">
           <input type="checkbox" v-model="showNormalized" class="w-3.5 h-3.5 accent-blue-500" />
           <span class="text-zinc-400">正则</span>
@@ -1680,7 +1789,7 @@ onMounted(() => {
 
         <!-- 删除按钮 -->
         <button v-if="selectedLineId"
-          class="absolute top-2 left-2 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-sm font-medium rounded shadow-lg z-10"
+          class="absolute top-2 left-2 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-base font-medium rounded shadow-lg z-10"
           @click="deleteLine">
           Delete
         </button>
@@ -1688,33 +1797,33 @@ onMounted(() => {
           class="absolute top-12 left-2 flex flex-col gap-2 z-10">
 
           <div v-if="targetMissingBaselineId"
-            class="mb-2 text-xs text-yellow-400 bg-black/80 p-2 rounded shadow border border-yellow-600/50">
+            class="mb-2 text-sm text-yellow-400 bg-black/80 p-2 rounded shadow border border-yellow-600/50">
             <strong>模式: 补足基线</strong><br>
             请点击至少2个点绘制基线
           </div>
           <div v-else-if="editMode === 'baseline'"
-            class="mb-2 text-xs text-orange-400 bg-black/80 p-2 rounded shadow border border-orange-600/50">
+            class="mb-2 text-sm text-orange-400 bg-black/80 p-2 rounded shadow border border-orange-600/50">
             <strong>模式: 编辑基线</strong><br>
             拖动调整，双击加点，右键删点
           </div>
           <div v-else-if="isCreating"
-            class="mb-2 text-xs text-green-400 bg-black/80 p-2 rounded shadow border border-green-600/50">
+            class="mb-2 text-sm text-green-400 bg-black/80 p-2 rounded shadow border border-green-600/50">
             <strong>模式: 新建多边形</strong><br>
             点击绘制，右键撤销点
           </div>
 
           <button v-if="editMode === 'polygon' || isCreating"
-            class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded shadow-lg flex items-center justify-center gap-1"
+            class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-base font-medium rounded shadow-lg flex items-center justify-center gap-1"
             @click="handleClearNearbyPoints" title="自动删除堆叠在一起的冗余顶点">
             <span>🧹</span> 清除冗余点
           </button>
 
-          <button class="px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white text-sm font-medium rounded shadow-lg"
+          <button class="px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white text-base font-medium rounded shadow-lg"
             @click="targetMissingBaselineId ? saveMissingBaseline() : saveEdit()">
             保存 (Save)
           </button>
 
-          <button class="px-3 py-1.5 bg-zinc-600 hover:bg-zinc-500 text-white text-sm font-medium rounded shadow-lg"
+          <button class="px-3 py-1.5 bg-zinc-600 hover:bg-zinc-500 text-white text-base font-medium rounded shadow-lg"
             @click="targetMissingBaselineId ? cancelMissingBaseline() : cancelEdit()">
             放弃 (Cancel)
           </button>
@@ -1744,16 +1853,16 @@ onMounted(() => {
             <!-- 句子头部 -->
             <div class="px-3 py-2 border-b border-zinc-800 flex items-center justify-between">
               <div class="flex items-center gap-2">
-                <span class="text-zinc-500 text-xs font-mono">{{ sIndex + 1 }}</span>
-                <button class="text-xs px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
+                <span class="text-zinc-500 text-sm font-mono">{{ sIndex + 1 }}</span>
+                <button class="text-sm px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
                   @click="openSentenceEditor(sentence)">
                   编辑
                 </button>
-                <span class="text-zinc-400 text-xs px-1.5 py-0.5 rounded bg-zinc-800">
+                <span class="text-zinc-400 text-sm px-1.5 py-0.5 rounded bg-zinc-800">
                   {{ getSentenceTypeLabel(sentence.type) }}
                 </span>
               </div>
-              <span class="text-zinc-600 text-xs">
+              <span class="text-zinc-600 text-sm">
                 {{ sentence.lines.length }} 行
               </span>
             </div>
@@ -1761,48 +1870,51 @@ onMounted(() => {
             <!-- 句子内的 TextLine 列表 -->
             <div class="p-2 space-y-1">
               <div v-for="(line, lIndex) in sentence.lines" :key="line.id"
-                class="p-2 bg-zinc-900 rounded flex items-start gap-2">
-                <span class="text-zinc-600 text-xs font-mono shrink-0 mt-0.5">
+                class="p-2 bg-zinc-900 rounded flex items-start gap-2" :class="[
+                  'p-2 rounded flex items-start gap-2 transition-colors duration-200',
+                  hoveredLineId === line.id ? 'bg-zinc-800 ring-1 ring-cyan-500' : 'bg-zinc-900'
+                ]">
+                <span class="text-zinc-600 text-sm font-mono shrink-0 mt-0.5">
                   {{ lIndex + 1 }}
                 </span>
                 <div class="flex-1">
                   <span v-for="glyph in line.glyphs" :key="glyph.id" :class="[
-                    'cursor-pointer hover:bg-blue-500/30 rounded px-px',
+                    'cursor-pointer hover:bg-blue-500/30 rounded px-px [font-variant-alternates:historical-forms]',
                     selectedGlyphId === glyph.id ? 'bg-blue-500/50 text-white' : 'text-zinc-300'
                   ]" @click="handleGlyphClick(glyph.id)">{{ glyph.content }}</span>
-                  <span v-if="line.glyphs.length === 0" class="text-zinc-600 italic text-sm">
+                  <span v-if="line.glyphs.length === 0" class="text-zinc-600 italic text-base">
                     (空行)
                   </span>
                 </div>
-                <button class="shrink-0 text-xs px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-400"
+                <button class="shrink-0 text-sm px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-400"
                   @click="openTextLineEditor(line)">
                   编辑
                 </button>
               </div>
 
               <!-- 空句子提示 -->
-              <div v-if="sentence.lines.length === 0" class="text-zinc-600 text-sm italic p-2">
+              <div v-if="sentence.lines.length === 0" class="text-zinc-600 text-base italic p-2">
                 该句子没有关联的 TextLine
               </div>
 
               <!-- 翻译文本显示 -->
               <div v-if="showNormalized || showEnglish || showChinese"
                 class="mt-2 pt-2 border-t border-zinc-800 space-y-1">
-                <div v-if="showNormalized && sentence.normalized" class="text-sm">
-                  <span class="text-zinc-500 text-xs mr-2">正则:</span>
+                <div v-if="showNormalized && sentence.normalized" class="text-base">
+                  <span class="text-zinc-500 text-sm mr-2">正则:</span>
                   <span class="text-zinc-300">{{ sentence.normalized }}</span>
                 </div>
-                <div v-if="showEnglish && sentence.en" class="text-sm">
-                  <span class="text-zinc-500 text-xs mr-2">EN:</span>
+                <div v-if="showEnglish && sentence.en" class="text-base">
+                  <span class="text-zinc-500 text-sm mr-2">EN:</span>
                   <span class="text-zinc-300">{{ sentence.en }}</span>
                 </div>
-                <div v-if="showChinese && sentence.zh" class="text-sm">
-                  <span class="text-zinc-500 text-xs mr-2">中:</span>
+                <div v-if="showChinese && sentence.zh" class="text-base">
+                  <span class="text-zinc-500 text-sm mr-2">中:</span>
                   <span class="text-zinc-300">{{ sentence.zh }}</span>
                 </div>
                 <div
                   v-if="(showNormalized || showEnglish || showChinese) && !sentence.normalized && !sentence.en && !sentence.zh"
-                  class="text-zinc-600 text-xs italic">
+                  class="text-zinc-600 text-sm italic">
                   暂无翻译
                 </div>
               </div>
@@ -1813,26 +1925,29 @@ onMounted(() => {
           <div v-if="groupedLines.unassigned.length > 0" class="rounded-lg border-l-4 border-red-500/50 bg-zinc-900/50">
             <div class="px-3 py-2 border-b border-zinc-800 flex items-center justify-between">
               <div class="flex items-center gap-2">
-                <span class="text-red-400 text-xs">⚠️ 待分配 TextLine</span>
+                <span class="text-red-400 text-sm">⚠️ 待分配 TextLine</span>
               </div>
-              <span class="text-zinc-600 text-xs">
+              <span class="text-zinc-600 text-sm">
                 {{ groupedLines.unassigned.length }} 行
               </span>
             </div>
 
             <div class="p-2 space-y-1">
               <div v-for="line in groupedLines.unassigned" :key="line.id"
-                class="p-2 bg-zinc-900 rounded flex items-start gap-2">
+                class="p-2 bg-zinc-900 rounded flex items-start gap-2" :class="[
+                  'p-2 rounded flex items-start gap-2 transition-colors duration-200',
+                  hoveredLineId === line.id ? 'bg-zinc-800 ring-1 ring-cyan-500' : 'bg-zinc-900'
+                ]">
                 <div class="flex-1">
                   <span v-for="glyph in line.glyphs" :key="glyph.id" :class="[
                     'cursor-pointer hover:bg-blue-500/30 rounded px-px',
                     selectedGlyphId === glyph.id ? 'bg-blue-500/50 text-white' : 'text-zinc-300'
                   ]" @click="handleGlyphClick(glyph.id)">{{ glyph.content }}</span>
-                  <span v-if="line.glyphs.length === 0" class="text-zinc-600 italic text-sm">
+                  <span v-if="line.glyphs.length === 0" class="text-zinc-600 italic text-base">
                     (空行)
                   </span>
                 </div>
-                <button class="shrink-0 text-xs px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-400"
+                <button class="shrink-0 text-sm px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-400"
                   @click="openTextLineEditor(line)">
                   编辑
                 </button>
@@ -1848,7 +1963,8 @@ onMounted(() => {
 
       <!-- 拓扑关系面板 -->
       <div v-if="showTopology" class="w-[27.2%] border-l border-zinc-800 transition-all duration-300">
-        <TopologyPanel :sentences="sentenceData?.sentences || []" />
+        <TopologyPanel :sentences="sentenceData?.sentences || []" :lines="lines" @hover-line="handleLineHover"
+          @leave-line="handleLineLeave" @update="handleTopologyUpdate" />
       </div>
     </div>
 
@@ -1856,31 +1972,31 @@ onMounted(() => {
     <div v-if="showMetaModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
       @click.self="showMetaModal = false">
       <div class="bg-zinc-900 rounded-lg p-6 w-125 max-h-[80vh] overflow-y-auto">
-        <h2 class="text-lg font-bold mb-4">编辑元信息</h2>
+        <h2 class="text-xl font-bold mb-4">编辑元信息</h2>
 
         <div class="space-y-4">
           <div>
-            <label class="block text-sm text-zinc-400 mb-1">图片远程链接</label>
+            <label class="block text-base text-zinc-400 mb-1">图片远程链接</label>
             <input v-model="form.image_remote_url" type="text"
               class="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-zinc-100 focus:outline-none focus:border-blue-500"
               placeholder="https://..." />
           </div>
 
           <div>
-            <label class="block text-sm text-zinc-400 mb-1">图片本地路径</label>
+            <label class="block text-base text-zinc-400 mb-1">图片本地路径</label>
             <input v-model="form.image_local_path" type="text"
               class="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-zinc-100 focus:outline-none focus:border-blue-500"
               placeholder="C:\..." />
           </div>
           <div>
-            <label class="block text-sm text-zinc-400 mb-1">英文描述</label>
+            <label class="block text-base text-zinc-400 mb-1">英文描述</label>
             <textarea v-model="form.description_en"
               class="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-zinc-100 focus:outline-none focus:border-blue-500 resize-none"
               rows="3" placeholder="English description..." />
           </div>
 
           <div>
-            <label class="block text-sm text-zinc-400 mb-1">其他语言描述</label>
+            <label class="block text-base text-zinc-400 mb-1">其他语言描述</label>
             <textarea v-model="form.description_other"
               class="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded text-zinc-100 focus:outline-none focus:border-blue-500 resize-none"
               rows="3" placeholder="其他语言描述..." />
@@ -1888,10 +2004,10 @@ onMounted(() => {
         </div>
 
         <div class="flex justify-end gap-2 mt-6">
-          <button class="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded text-sm" @click="showMetaModal = false">
+          <button class="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded text-base" @click="showMetaModal = false">
             取消
           </button>
-          <button class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm" @click="saveMeta">
+          <button class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-base" @click="saveMeta">
             保存
           </button>
         </div>

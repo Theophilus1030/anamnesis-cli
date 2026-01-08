@@ -39,6 +39,10 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  /* 字体引用保持不变 */
+  --font-sans: "EB Garamond", "fzkansong", "sans-serif"; 
+  --font-serif: "EB Garamond", "fzkansong", "sans-serif";
+  --font-nav: "EB Garamond", "YanShiXiaXingKai", "sans-serif";
 }
 
 :root {
@@ -112,9 +116,127 @@
 
 @layer base {
   * {
+    font-variant-ligatures: discretionary-ligatures; 
+    font-variant-numeric: lining-nums;
     @apply border-border outline-ring/50;
   }
   body {
     @apply bg-background text-foreground;
+  }
+  pre {
+    @apply my-4 rounded-lg p-4;
+  }
+  ol {
+    font-feature-settings: "lnum" 1;
+  }
+  code {
+    counter-reset: step;
+    counter-increment: step 0;
+  }
+  code .line::before {
+    content: counter(step);
+    counter-increment: step;
+    width: 1rem;
+    margin-right: 1.5rem;
+    display: inline-block;
+    text-align: right;
+    color: #C0CAF5;
+  }
+
+  
+  @font-face {
+    font-family: "palatino-bolditalic";
+    src: url("/fonts/palabi.ttf"); 
+  }
+
+  @font-face {
+    font-family: "fzkansong";
+    src: url("/fonts/FZPingXYSJW.ttf");
+  }
+
+@font-face {
+  font-family: "EB Garamond";
+  src: url("/fonts/EBGaramond-Italic.otf");
+  font-style: italic;
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "EB Garamond";
+  src: url("/fonts/EBGaramond-Regular.otf");
+  font-style: normal;
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "EB Garamond";
+  src: url("/fonts/EBGaramond-MediumItalic.otf");
+  font-style: italic;
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: "EB Garamond";
+  src: url("/fonts/EBGaramond-Medium.otf");
+  font-style: normal;
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: "EB Garamond";
+  src: url("/fonts/EBGaramond-SemiBoldItalic.otf");
+  font-style: italic;
+  font-weight: 600;
+}
+
+@font-face {
+  font-family: "EB Garamond";
+  src: url("/fonts/EBGaramond-SemiBold.otf");
+  font-style: normal;
+  font-weight: 600;
+}
+
+@font-face {
+  font-family: "EB Garamond";
+  src: url("/fonts/EBGaramond-BoldItalic.otf");
+  font-style: italic;
+  font-weight: 700;
+}
+
+@font-face {
+  font-family: "EB Garamond";
+  src: url("/fonts/EBGaramond-Bold.otf");
+  font-style: normal;
+  font-weight: 700;
+}
+
+  @font-face {
+    font-family: "Fira Code";
+    src: url("/fonts/FiraCode-Light.ttf");
+    font-weight: 300;
+  }
+
+  @font-face {
+    font-family: "Fira Code";
+    src: url("/fonts/FiraCode-Regular.ttf");
+    font-weight: 400;
+  }
+
+  @font-face {
+    font-family: "Fira Code";
+    src: url("/fonts/FiraCode-Medium.ttf");
+    font-weight: 500;
+  }
+
+  @font-face {
+    font-family: "Fira Code";
+    src: url("/fonts/FiraCode-SemiBold.ttf");
+    font-weight: 600;
+  }
+
+  @font-face {
+    font-family: "Fira Code";
+    src: url("/fonts/FiraCode-Bold.ttf");
+    font-weight: 700;
   }
 }
