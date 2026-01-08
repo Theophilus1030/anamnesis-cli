@@ -1,7 +1,34 @@
-# Tauri + Vue + TypeScript
+## 开发流程规划
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+### 第一步：折叠展开功能
 
-## Recommended IDE Setup
+1. 在工具栏添加"拓扑关系"按钮
+2. 添加状态变量控制展开/收起
+3. 调整三个容器的比例（收起时 1:1，展开时 4:4:3）
+4. 创建占位组件 `TopologyPanel.vue`，显示一行文字
 
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+### 第二步：基础拓扑图渲染
+
+1. 渲染槽位（横向容器）
+2. 渲染方块（显示 TextLine 序号）
+3. 从 sentenceData 读取数据，显示当前分组状态
+
+### 第三步：悬浮高亮联动
+
+1. 鼠标悬浮方块时，高亮左侧图片对应的 region/baseline
+2. 同时高亮右侧文本中对应的 TextLine 部分
+3. 通过 props 和 emit 实现父子组件通信
+
+### 第四步：拖拽功能
+
+1. 方块可拖拽
+2. 槽内排序（调整同一句子中 TextLine 顺序）
+3. 跨槽拖拽（将 TextLine 移到其他句子）
+4. 拖到槽之间创建新槽
+
+### 第五步：删除逻辑
+
+1. 删除方块时判断槽内是否还有其他方块
+2. 槽有翻译信息时弹窗询问处理方式
+3. 更新 sentenceData 并保存
+

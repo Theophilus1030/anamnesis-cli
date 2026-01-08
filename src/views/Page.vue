@@ -5,7 +5,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { readTextFile } from '@tauri-apps/plugin-fs'
 import TopologyPanel from '@/components/TopologyPanel.vue'
-
+import SentenceEditor from '@/components/SentenceEditor.vue'
+import TextLineEditor from '@/components/TextLineEditor.vue'
 const route = useRoute()
 const router = useRouter()
 const projectId = route.params.projectId as string
@@ -102,6 +103,16 @@ const showPolygons = ref(false)
 const history = ref<HistoryState[]>([])
 const historyIndex = ref(-1)
 
+// 显示控制：正则原文、英文、中文
+const showNormalized = ref(true)
+const showEnglish = ref(true)
+const showChinese = ref(true)
+// 编辑 TextLine 弹窗
+const editingTextLine = ref<Line | null>(null)
+const showTextLineEditor = ref(false)
+// 编辑句子弹窗
+const editingSentence = ref<Sentence | null>(null)
+const showSentenceEditor = ref(false)
 
 // 表单数据
 const form = ref({
@@ -464,12 +475,12 @@ function drawCanvas() {
         const isSelected = glyph.id === selectedGlyphId.value
         // 只有选中时才画，或者你想一直画也可以，这里保留选中高亮逻辑
         if (isSelected) {
-           const rect = getGlyphRect(glyph, i, glyphs)
-           ctx.fillStyle = 'rgba(59, 130, 246, 0.3)'
-           ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
-           ctx.strokeStyle = 'rgba(59, 130, 246, 1)'
-           ctx.lineWidth = 2
-           ctx.strokeRect(rect.x, rect.y, rect.width, rect.height)
+          const rect = getGlyphRect(glyph, i, glyphs)
+          ctx.fillStyle = 'rgba(59, 130, 246, 0.3)'
+          ctx.fillRect(rect.x, rect.y, rect.width, rect.height)
+          ctx.strokeStyle = 'rgba(59, 130, 246, 1)'
+          ctx.lineWidth = 2
+          ctx.strokeRect(rect.x, rect.y, rect.width, rect.height)
         }
       }
     }
@@ -595,7 +606,7 @@ function startFixMissingBaseline() {
 }
 
 // 补足模式下的保存
-function saveMissingBaseline() {
+async function saveMissingBaseline() {
   if (tempPoints.value.length < 2) {
     alert("基线至少需要2个点")
     return
@@ -609,6 +620,7 @@ function saveMissingBaseline() {
     // 如果基线只有1个点(实际上上面拦截了，但逻辑上要处理)，视同无效
     // 保存历史
     saveHistory()
+    await saveToBackend()
   }
 
   // 退出模式
@@ -677,20 +689,20 @@ async function saveEdit() {
     // 创建新 Line
     const newLine: Line = {
       id: crypto.randomUUID(),
-      baseline: [], 
+      baseline: [],
       polygon: JSON.parse(JSON.stringify(tempPoints.value)),
       glyphs: []
     };
-    
+
     lines.value.push(newLine);
-    
+
     // TODO: 调用后端更新
-    
+
     isCreating.value = false;
     tempPoints.value = [];
     saveHistory();
-    
-  } 
+
+  }
   // ------------------------------------------------
   // 情况 2: 编辑已有 Line
   // ------------------------------------------------
@@ -699,7 +711,7 @@ async function saveEdit() {
     if (!line) return;
 
     // --- 修复点开始：区分模式进行校验 ---
-    
+
     // 如果当前是在编辑【多边形】，才检查多边形自交
     if (editMode.value === 'polygon') {
       if (!validatePolygon(line.polygon)) {
@@ -708,10 +720,10 @@ async function saveEdit() {
         return;
       }
     }
-    
+
     // 如果当前是在编辑【基线】，通常不需要检查自交（基线允许交叉，或者是开放路径）
     // 所以这里直接跳过 validatePolygon 检查
-    
+
     // --- 修复点结束 ---
 
     editSnapshot.value = null; // 清除快照
@@ -720,7 +732,7 @@ async function saveEdit() {
     saveHistory();
     // TODO: 调用后端保存
   }
-  
+  await saveToBackend()
   drawCanvas();
 }
 
@@ -1129,17 +1141,32 @@ function redo() {
   }
 }
 
-function deleteLine() {
+async function deleteLine() {
   if (!selectedLineId.value) return
+
+  // 弹窗确认（可选）
+  if (!confirm("确定要删除选中的行吗？")) return
+
   saveHistory()
   lines.value = lines.value.filter(l => l.id !== selectedLineId.value)
+
+  // 清理选中状态
   selectedLineId.value = null
   selectedGlyphId.value = null
+
+  // 保存到后端
+  await saveToBackend() // <--- 新增这行
+
   drawCanvas()
 }
 
 function goBack() {
   router.push(`/project/${projectId}`)
+}
+
+// 将坐标数组转换为 ALTO 格式的字符串 "x1 y1 x2 y2 ..."
+function pointsToString(points: number[][]): string {
+  return points.map(p => `${Math.round(p[0])} ${Math.round(p[1])}`).join(' ')
 }
 
 async function loadData() {
@@ -1164,6 +1191,371 @@ function initCanvas() {
     canvasRef.value.width = imageRef.value.naturalWidth
     canvasRef.value.height = imageRef.value.naturalHeight
     drawCanvas()
+  }
+}
+
+async function saveToBackend() {
+  if (!altoXml.value) return
+
+  // 1. 解析原始 XML 为 DOM 对象
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(altoXml.value, "text/xml")
+
+  // 命名空间处理
+  const ns = doc.documentElement.getAttribute('xmlns')
+
+  // 辅助：根据 ID 查找 XML 中的节点
+  const findLineNode = (id: string) => {
+    let node = doc.getElementById(id)
+    if (!node) {
+      const allLines = doc.getElementsByTagName('TextLine')
+      for (let i = 0; i < allLines.length; i++) {
+        if (allLines[i].getAttribute('ID') === id) return allLines[i]
+      }
+    }
+    return node
+  }
+
+  // 辅助：在指定节点中查找 Glyph
+  const findGlyphNode = (lineNode: Element, glyphId: string) => {
+    const allGlyphs = lineNode.getElementsByTagName('Glyph')
+    for (let i = 0; i < allGlyphs.length; i++) {
+      if (allGlyphs[i].getAttribute('ID') === glyphId) return allGlyphs[i]
+    }
+    return null
+  }
+
+  // 2. 找到 TextBlock
+  let textBlock = doc.getElementsByTagName('TextBlock')[0]
+  if (!textBlock) {
+    console.error("XML 中未找到 TextBlock，无法保存")
+    return
+  }
+
+  // 3. 遍历前端的数据 (lines.value)，更新 XML
+  lines.value.forEach(lineData => {
+    let lineNode = findLineNode(lineData.id)
+
+    if (lineNode) {
+      // --- 更新已有 Line ---
+
+      // 更新 Baseline
+      if (lineData.baseline && lineData.baseline.length > 0) {
+        lineNode.setAttribute('BASELINE', pointsToString(lineData.baseline))
+      } else {
+        lineNode.removeAttribute('BASELINE')
+      }
+
+      // 更新 Polygon
+      let shapeNode = lineNode.querySelector(':scope > Shape')
+      if (!shapeNode) {
+        shapeNode = doc.createElementNS(ns, 'Shape')
+        lineNode.insertBefore(shapeNode, lineNode.firstChild)
+      }
+
+      let polyNode = shapeNode.querySelector(':scope > Polygon')
+      if (!polyNode) {
+        polyNode = doc.createElementNS(ns, 'Polygon')
+        shapeNode.appendChild(polyNode)
+      }
+
+      polyNode.setAttribute('POINTS', pointsToString(lineData.polygon))
+
+      // --- 更新 Glyphs ---
+      lineData.glyphs.forEach(glyphData => {
+        let glyphNode = findGlyphNode(lineNode as Element, glyphData.id)
+
+        if (glyphNode) {
+          // 更新已有 Glyph
+          glyphNode.setAttribute('CONTENT', glyphData.content)
+          glyphNode.setAttribute('HPOS', String(Math.round(glyphData.hpos)))
+          glyphNode.setAttribute('VPOS', String(Math.round(glyphData.vpos)))
+          glyphNode.setAttribute('WIDTH', String(Math.round(glyphData.width)))
+          glyphNode.setAttribute('HEIGHT', String(Math.round(glyphData.height)))
+        }
+      })
+
+      // 同时更新 String 节点的 CONTENT（拼接所有 Glyph）
+      const stringNodes = lineNode.getElementsByTagName('String')
+      for (let i = 0; i < stringNodes.length; i++) {
+        const stringNode = stringNodes[i]
+        const glyphsInString = stringNode.getElementsByTagName('Glyph')
+        let content = ''
+        for (let j = 0; j < glyphsInString.length; j++) {
+          content += glyphsInString[j].getAttribute('CONTENT') || ''
+        }
+        stringNode.setAttribute('CONTENT', content)
+      }
+
+    } else {
+      // --- 新增 Line ---
+      const newLine = doc.createElementNS(ns, 'TextLine')
+      newLine.setAttribute('ID', lineData.id)
+
+      if (lineData.baseline.length > 0) {
+        newLine.setAttribute('BASELINE', pointsToString(lineData.baseline))
+      }
+
+      const newShape = doc.createElementNS(ns, 'Shape')
+      const newPoly = doc.createElementNS(ns, 'Polygon')
+      newPoly.setAttribute('POINTS', pointsToString(lineData.polygon))
+      newShape.appendChild(newPoly)
+      newLine.appendChild(newShape)
+
+      textBlock.appendChild(newLine)
+    }
+  })
+
+  // 4. 处理删除
+  const currentIds = new Set(lines.value.map(l => l.id))
+  const xmlLines = Array.from(doc.getElementsByTagName('TextLine'))
+
+  xmlLines.forEach(node => {
+    const id = node.getAttribute('ID')
+    if (id && !currentIds.has(id)) {
+      node.parentNode?.removeChild(node)
+    }
+  })
+
+  // 5. 序列化回字符串
+  const serializer = new XMLSerializer()
+  const newXmlStr = serializer.serializeToString(doc)
+
+  // 6. 更新本地状态并发送给后端
+  altoXml.value = newXmlStr
+
+  try {
+    await invoke('save_alto', { pageId, xml: newXmlStr })
+    console.log("保存成功！")
+  } catch (e) {
+    console.error("保存失败:", e)
+    alert("保存到数据库失败: " + e)
+  }
+}
+
+// 按句子分组的 TextLine
+const groupedLines = computed(() => {
+  if (!sentenceData.value) return { sentences: [], unassigned: lines.value }
+
+  const assignedLineIds = new Set<string>()
+
+  const sentences = sentenceData.value.sentences.map(sentence => {
+    const sentenceLines: Line[] = []
+    for (const lineId of sentence.line_ids) {
+      const line = lines.value.find(l => l.id === lineId)
+      if (line) {
+        sentenceLines.push(line)
+        assignedLineIds.add(lineId)
+      }
+    }
+    return {
+      ...sentence,
+      lines: sentenceLines
+    }
+  })
+
+  // 找出未分配的 TextLine
+  const unassigned = lines.value.filter(l => !assignedLineIds.has(l.id))
+
+  return { sentences, unassigned }
+})
+
+// 获取句子类型的显示标签
+function getSentenceTypeLabel(type: 'text' | 'title' | 'note'): string {
+  switch (type) {
+    case 'title': return '标题'
+    case 'note': return '注释'
+    default: return '正文'
+  }
+}
+
+// 获取句子类型的颜色
+function getSentenceTypeColor(type: 'text' | 'title' | 'note'): string {
+  switch (type) {
+    case 'title': return 'border-yellow-500/50'
+    case 'note': return 'border-green-500/50'
+    default: return 'border-blue-500/50'
+  }
+}
+
+function openSentenceEditor(sentence: Sentence) {
+  editingSentence.value = sentence
+  showSentenceEditor.value = true
+}
+
+async function handleSaveSentence(data: { normalized: string; en: string; zh: string; type: 'text' | 'title' | 'note' }) {
+  if (!editingSentence.value || !sentenceData.value) return
+
+  // 找到并更新句子
+  const index = sentenceData.value.sentences.findIndex(s => s.id === editingSentence.value!.id)
+  if (index !== -1) {
+    sentenceData.value.sentences[index] = {
+      ...sentenceData.value.sentences[index],
+      normalized: data.normalized,
+      en: data.en,
+      zh: data.zh,
+      type: data.type
+    }
+
+    // 保存到数据库
+    await invoke('save_sentence', {
+      pageId,
+      data: JSON.stringify(sentenceData.value)
+    })
+  }
+
+  showSentenceEditor.value = false
+  editingSentence.value = null
+}
+
+function closeSentenceEditor() {
+  showSentenceEditor.value = false
+  editingSentence.value = null
+}
+
+function openTextLineEditor(line: Line) {
+  editingTextLine.value = line
+  showTextLineEditor.value = true
+}
+
+async function handleSaveTextLine(updatedLine: Line) {
+  // 更新 lines 数组中对应的行
+  const index = lines.value.findIndex(l => l.id === updatedLine.id)
+  if (index !== -1) {
+    lines.value[index] = updatedLine
+    saveHistory()
+    await saveToBackend()
+  }
+
+  showTextLineEditor.value = false
+  editingTextLine.value = null
+  drawCanvas()
+}
+
+function closeTextLineEditor() {
+  showTextLineEditor.value = false
+  editingTextLine.value = null
+}
+
+// 根据 line id 找到所属的 sentence
+function findSentenceByLineId(lineId: string): Sentence | null {
+  if (!sentenceData.value) return null
+  return sentenceData.value.sentences.find(s => s.line_ids.includes(lineId)) || null
+}
+
+// 获取全局 TextLine 顺序
+function getGlobalLineOrder(): string[] {
+  if (!sentenceData.value) return []
+  const order: string[] = []
+  for (const sentence of sentenceData.value.sentences) {
+    for (const lineId of sentence.line_ids) {
+      order.push(lineId)
+    }
+  }
+  return order
+}
+
+async function handleSplitAfter(lineId: string, glyphIndex: number) {
+  if (!sentenceData.value) return
+  
+  const globalOrder = getGlobalLineOrder()
+  const globalIndex = globalOrder.indexOf(lineId)
+  
+  if (globalIndex === -1 || globalIndex === globalOrder.length - 1) return
+  
+  const currentLine = lines.value.find(l => l.id === lineId)
+  if (!currentLine) return
+  
+  // 获取下一个 TextLine 的 ID
+  const nextLineId = globalOrder[globalIndex + 1]
+  const nextLine = lines.value.find(l => l.id === nextLineId)
+  if (!nextLine) return
+  
+  // 获取要移动的 glyphs（glyphIndex 之后的所有字符）
+  const glyphsToMove = currentLine.glyphs.slice(glyphIndex + 1)
+  
+  if (glyphsToMove.length === 0) return
+  
+  // 更新 lineId
+  glyphsToMove.forEach(g => {
+    g.lineId = nextLineId
+  })
+  
+  // 从当前行移除
+  currentLine.glyphs = currentLine.glyphs.slice(0, glyphIndex + 1)
+  
+  // 添加到下一行的开头
+  nextLine.glyphs = [...glyphsToMove, ...nextLine.glyphs]
+  
+  saveHistory()
+  await saveToBackend()
+  
+  // 关闭编辑器
+  showTextLineEditor.value = false
+  editingTextLine.value = null
+  
+  drawCanvas()
+}
+
+async function handleSplitBefore(lineId: string, glyphIndex: number) {
+  if (!sentenceData.value) return
+  
+  const globalOrder = getGlobalLineOrder()
+  const globalIndex = globalOrder.indexOf(lineId)
+  
+  if (globalIndex === -1 || globalIndex === 0) return
+  
+  const currentLine = lines.value.find(l => l.id === lineId)
+  if (!currentLine) return
+  
+  // 获取上一个 TextLine 的 ID
+  const prevLineId = globalOrder[globalIndex - 1]
+  const prevLine = lines.value.find(l => l.id === prevLineId)
+  if (!prevLine) return
+  
+  // 获取要移动的 glyphs（glyphIndex 之前的所有字符，不包括 glyphIndex）
+  const glyphsToMove = currentLine.glyphs.slice(0, glyphIndex)
+  
+  if (glyphsToMove.length === 0) return
+  
+  // 更新 lineId
+  glyphsToMove.forEach(g => {
+    g.lineId = prevLineId
+  })
+  
+  // 从当前行移除
+  currentLine.glyphs = currentLine.glyphs.slice(glyphIndex)
+  
+  // 添加到上一行的末尾
+  prevLine.glyphs = [...prevLine.glyphs, ...glyphsToMove]
+  
+  saveHistory()
+  await saveToBackend()
+  
+  // 关闭编辑器
+  showTextLineEditor.value = false
+  editingTextLine.value = null
+  
+  drawCanvas()
+}
+
+async function handleUpdateSentenceFromEditor(data: { normalized: string; en: string; zh: string; type: 'text' | 'title' | 'note' }) {
+  if (!editingTextLine.value || !sentenceData.value) return
+
+  const sentence = findSentenceByLineId(editingTextLine.value.id)
+  if (!sentence) return
+
+  const index = sentenceData.value.sentences.findIndex(s => s.id === sentence.id)
+  if (index !== -1) {
+    sentenceData.value.sentences[index] = {
+      ...sentenceData.value.sentences[index],
+      ...data
+    }
+
+    await invoke('save_sentence', {
+      pageId,
+      data: JSON.stringify(sentenceData.value)
+    })
   }
 }
 
@@ -1262,6 +1654,20 @@ onMounted(() => {
       ]" @click="showTopology = !showTopology">
         拓扑关系
       </button>
+      <div class="flex items-center gap-3 text-sm">
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" v-model="showNormalized" class="w-3.5 h-3.5 accent-blue-500" />
+          <span class="text-zinc-400">正则</span>
+        </label>
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" v-model="showEnglish" class="w-3.5 h-3.5 accent-blue-500" />
+          <span class="text-zinc-400">英文</span>
+        </label>
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" v-model="showChinese" class="w-3.5 h-3.5 accent-blue-500" />
+          <span class="text-zinc-400">中文</span>
+        </label>
+      </div>
     </div>
 
     <!-- 内容区 -->
@@ -1329,14 +1735,112 @@ onMounted(() => {
         'bg-zinc-950 border-l border-zinc-800 p-4 overflow-y-auto transition-all duration-300',
         showTopology ? 'w-[36.4%]' : 'w-1/2'
       ]">
-        <div v-if="lines.length > 0" class="space-y-2">
-          <div v-for="line in lines" :key="line.id" class="p-2 bg-zinc-900 rounded">
-            <span v-for="glyph in line.glyphs" :key="glyph.id" :class="[
-              'cursor-pointer hover:bg-blue-500/30 rounded px-px',
-              selectedGlyphId === glyph.id ? 'bg-blue-500/50 text-white' : 'text-zinc-300'
-            ]" @click="handleGlyphClick(glyph.id)">{{ glyph.content }}</span>
+        <div v-if="lines.length > 0" class="space-y-4">
+          <!-- 按句子分组显示 -->
+          <div v-for="(sentence, sIndex) in groupedLines.sentences" :key="sentence.id" :class="[
+            'rounded-lg border-l-4 bg-zinc-900/50',
+            getSentenceTypeColor(sentence.type)
+          ]">
+            <!-- 句子头部 -->
+            <div class="px-3 py-2 border-b border-zinc-800 flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-zinc-500 text-xs font-mono">{{ sIndex + 1 }}</span>
+                <button class="text-xs px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300"
+                  @click="openSentenceEditor(sentence)">
+                  编辑
+                </button>
+                <span class="text-zinc-400 text-xs px-1.5 py-0.5 rounded bg-zinc-800">
+                  {{ getSentenceTypeLabel(sentence.type) }}
+                </span>
+              </div>
+              <span class="text-zinc-600 text-xs">
+                {{ sentence.lines.length }} 行
+              </span>
+            </div>
+
+            <!-- 句子内的 TextLine 列表 -->
+            <div class="p-2 space-y-1">
+              <div v-for="(line, lIndex) in sentence.lines" :key="line.id"
+                class="p-2 bg-zinc-900 rounded flex items-start gap-2">
+                <span class="text-zinc-600 text-xs font-mono shrink-0 mt-0.5">
+                  {{ lIndex + 1 }}
+                </span>
+                <div class="flex-1">
+                  <span v-for="glyph in line.glyphs" :key="glyph.id" :class="[
+                    'cursor-pointer hover:bg-blue-500/30 rounded px-px',
+                    selectedGlyphId === glyph.id ? 'bg-blue-500/50 text-white' : 'text-zinc-300'
+                  ]" @click="handleGlyphClick(glyph.id)">{{ glyph.content }}</span>
+                  <span v-if="line.glyphs.length === 0" class="text-zinc-600 italic text-sm">
+                    (空行)
+                  </span>
+                </div>
+                <button class="shrink-0 text-xs px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-400"
+                  @click="openTextLineEditor(line)">
+                  编辑
+                </button>
+              </div>
+
+              <!-- 空句子提示 -->
+              <div v-if="sentence.lines.length === 0" class="text-zinc-600 text-sm italic p-2">
+                该句子没有关联的 TextLine
+              </div>
+
+              <!-- 翻译文本显示 -->
+              <div v-if="showNormalized || showEnglish || showChinese"
+                class="mt-2 pt-2 border-t border-zinc-800 space-y-1">
+                <div v-if="showNormalized && sentence.normalized" class="text-sm">
+                  <span class="text-zinc-500 text-xs mr-2">正则:</span>
+                  <span class="text-zinc-300">{{ sentence.normalized }}</span>
+                </div>
+                <div v-if="showEnglish && sentence.en" class="text-sm">
+                  <span class="text-zinc-500 text-xs mr-2">EN:</span>
+                  <span class="text-zinc-300">{{ sentence.en }}</span>
+                </div>
+                <div v-if="showChinese && sentence.zh" class="text-sm">
+                  <span class="text-zinc-500 text-xs mr-2">中:</span>
+                  <span class="text-zinc-300">{{ sentence.zh }}</span>
+                </div>
+                <div
+                  v-if="(showNormalized || showEnglish || showChinese) && !sentence.normalized && !sentence.en && !sentence.zh"
+                  class="text-zinc-600 text-xs italic">
+                  暂无翻译
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 未分配的 TextLine -->
+          <div v-if="groupedLines.unassigned.length > 0" class="rounded-lg border-l-4 border-red-500/50 bg-zinc-900/50">
+            <div class="px-3 py-2 border-b border-zinc-800 flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-red-400 text-xs">⚠️ 待分配 TextLine</span>
+              </div>
+              <span class="text-zinc-600 text-xs">
+                {{ groupedLines.unassigned.length }} 行
+              </span>
+            </div>
+
+            <div class="p-2 space-y-1">
+              <div v-for="line in groupedLines.unassigned" :key="line.id"
+                class="p-2 bg-zinc-900 rounded flex items-start gap-2">
+                <div class="flex-1">
+                  <span v-for="glyph in line.glyphs" :key="glyph.id" :class="[
+                    'cursor-pointer hover:bg-blue-500/30 rounded px-px',
+                    selectedGlyphId === glyph.id ? 'bg-blue-500/50 text-white' : 'text-zinc-300'
+                  ]" @click="handleGlyphClick(glyph.id)">{{ glyph.content }}</span>
+                  <span v-if="line.glyphs.length === 0" class="text-zinc-600 italic text-sm">
+                    (空行)
+                  </span>
+                </div>
+                <button class="shrink-0 text-xs px-1.5 py-0.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-400"
+                  @click="openTextLineEditor(line)">
+                  编辑
+                </button>
+              </div>
+            </div>
           </div>
         </div>
+
         <div v-else class="text-zinc-500">
           暂无数据，请导入 ALTO 文件
         </div>
@@ -1393,5 +1897,17 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- 编辑句子弹窗 -->
+    <SentenceEditor :sentence="editingSentence" :visible="showSentenceEditor" @close="closeSentenceEditor"
+      @save="handleSaveSentence" />
+    <!-- 编辑 TextLine 弹窗 -->
+    <!-- 编辑 TextLine 弹窗 -->
+    <!-- 编辑 TextLine 弹窗 -->
+    <TextLineEditor :line="editingTextLine" :image-url="imageUrl" :visible="showTextLineEditor" :all-lines="lines"
+      :sentences="sentenceData?.sentences || []"
+      :sentence="editingTextLine ? findSentenceByLineId(editingTextLine.id) : null" @close="closeTextLineEditor"
+      @save="handleSaveTextLine" @split-after="handleSplitAfter" @split-before="handleSplitBefore"
+      @update-sentence="handleUpdateSentenceFromEditor" />
   </div>
 </template>
