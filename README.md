@@ -1,34 +1,42 @@
-## 开发流程规划
+# Anamnesis 古籍文献校对编辑器
 
-### 第一步：折叠展开功能
+## 介绍
 
-1. 在工具栏添加"拓扑关系"按钮
-2. 添加状态变量控制展开/收起
-3. 调整三个容器的比例（收起时 1:1，展开时 4:4:3）
-4. 创建占位组件 `TopologyPanel.vue`，显示一行文字
+这是一个古籍文献校对编辑器，集成了 `Kraken`，并且以 `CATMuS` 和 `blla` 作为默认识别与分割模型，用户也可以加载自己的模型。之后可以用编辑器识别，得到 `ALTO XML`，用户可以用编辑器调整多边形、基线，还可以对每个TextLine内部的字母做精细操作，并支持导出 `ALTO XML`，与 `eScriptorium` 兼容。
 
-### 第二步：基础拓扑图渲染
+## 调试 \& 构建
 
-1. 渲染槽位（横向容器）
-2. 渲染方块（显示 TextLine 序号）
-3. 从 sentenceData 读取数据，显示当前分组状态
+本项目使用 `Tauri 2.0` 开发，若要调试或构建，需要 `rust` 与 `node` 环境.
 
-### 第三步：悬浮高亮联动
+并且用到了 `python` 打包的 `exe` 程序作为 `sidecar`，需要先打包
 
-1. 鼠标悬浮方块时，高亮左侧图片对应的 region/baseline
-2. 同时高亮右侧文本中对应的 TextLine 部分
-3. 通过 props 和 emit 实现父子组件通信
+```bash
+cd ./sidecar
+```
 
-### 第四步：拖拽功能
+```bash
+pyinstaller ocr.spec
+```
 
-1. 方块可拖拽
-2. 槽内排序（调整同一句子中 TextLine 顺序）
-3. 跨槽拖拽（将 TextLine 移到其他句子）
-4. 拖到槽之间创建新槽
+之后将 `./sidecar/dist` 中的exe程序复制到 `./src-tauri/binaries` 中，才能正常调试或构建
 
-### 第五步：删除逻辑
 
-1. 删除方块时判断槽内是否还有其他方块
-2. 槽有翻译信息时弹窗询问处理方式
-3. 更新 sentenceData 并保存
+```bash
+pnpm i
+# 调试
+pnpm tauri dev
+# 构建
+pnpm tauri build
+```
 
+## 交流
+
+欢迎加入 QQ 群 1077917619 交流讨论，遇到 bug 也欢迎进群反馈.
+
+## 支持作者
+
+这个项目是完全开源免费的，如果喜欢，可以投喂作者，非常感谢!
+
+BTC：bc1qmy0rxv2yglvpw2uelvfhv468us8fc5hr6y0wxw
+ETH：0x9B033C903ff37EE65B42bD72f0248B1eC32d0a7a
+Solana：2UbqTDCy97FFtXXXhZxq2imyrPyWaEDm1rNuBkyPzVDE

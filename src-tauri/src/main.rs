@@ -28,6 +28,10 @@ fn main() {
             commands::get_alto,
             commands::save_sentence,
             commands::get_sentence,
+            commands::run_kraken_ocr,
+            commands::check_default_models,
+            commands::update_page_name,
+            commands::update_project_name
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

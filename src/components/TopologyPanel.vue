@@ -160,99 +160,120 @@ onUnmounted(() => {
 
 <template>
   <div class="h-full bg-zinc-950 flex flex-col border-l border-zinc-800">
-    <div class="h-12 flex items-center px-4 border-b border-zinc-800 bg-zinc-900 shrink-0 justify-between">
+    
+    <div class="h-12 flex items-center px-4 border-b border-zinc-800 bg-zinc-900 shrink-0 justify-between z-10">
       <span class="text-zinc-100 font-medium text-base">拓扑结构</span>
       <span class="text-zinc-500 text-sm bg-zinc-800 px-1.5 py-0.5 rounded">
         {{ localSentences.length }} 句
       </span>
     </div>
 
-    <div class="flex-1 overflow-y-auto p-4">
+    <div class="p-4 border-b border-zinc-800 bg-zinc-950 shrink-0 z-10 shadow-sm">
+      <div class="text-sm text-zinc-500 mb-2 font-medium flex justify-between">
+        <span>待分配 (Inbox)</span>
+        <span class="text-[10px]">{{ localUnassignedIds.length }}</span>
+      </div>
 
-      <!-- 待分配区域 -->
-      <div class="mb-6">
-        <div class="text-sm text-zinc-500 mb-2 font-medium flex justify-between">
-          <span>待分配 (Inbox)</span>
-          <span class="text-[10px]">{{ localUnassignedIds.length }}</span>
-        </div>
+      <draggable 
+        v-model="localUnassignedIds" 
+        v-bind="dragOptions" 
+        :item-key="getItemKey" 
+        tag="div"
+        handle=".drag-handle"
+        class="flex flex-wrap gap-2 p-3 bg-zinc-900/50 rounded-lg border border-dashed border-zinc-700 min-h-15 max-h-40 overflow-y-auto"
+        @end="onDragEnd"
+      >
+        <template #item="{ element: lineId }">
+          <div 
+            class="drag-item h-8 px-2 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 rounded text-sm flex items-center gap-1 shadow-sm select-none border border-zinc-600"
+            :title="getLineContent(lineId)" 
+            @mouseenter="emit('hover-line', lineId)" 
+            @mouseleave="emit('leave-line')"
+          >
+            <span class="drag-handle cursor-grab active:cursor-grabbing text-zinc-500 hover:text-white px-1 font-bold text-sm">⋮⋮</span>
+            <span>L{{ getLineIndex(lineId) }}</span>
+          </div>
+        </template>
+      </draggable>
+    </div>
 
-        <draggable v-model="localUnassignedIds" v-bind="dragOptions" :item-key="getItemKey" tag="div"
-          handle=".drag-handle"
-          class="flex flex-wrap gap-2 p-3 bg-zinc-900/50 rounded-lg border border-dashed border-zinc-700 min-h-15"
-          @end="onDragEnd">
-          <template #item="{ element: lineId }">
-            <div
-              class="drag-item h-8 px-2 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 rounded text-sm flex items-center gap-1 shadow-sm select-none border border-zinc-600"
-              :title="getLineContent(lineId)" @mouseenter="emit('hover-line', lineId)" @mouseleave="emit('leave-line')">
-              <span
-                class="drag-handle cursor-grab active:cursor-grabbing text-zinc-500 hover:text-white px-1 font-bold text-sm">⋮⋮</span>
-              <span>L{{ getLineIndex(lineId) }}</span>
-            </div>
+    <div class="flex-1 overflow-y-auto p-4 bg-zinc-950">
+      
+      <div class="text-sm text-zinc-500 mb-2 font-medium sticky top-0 bg-zinc-950 py-1 z-0">
+        句子流 (Sentence Flow)
+      </div>
+
+      <div class="ghost-slot h-8 border-2 border-dashed border-zinc-700 hover:border-yellow-500/50 hover:bg-yellow-500/10 rounded mb-2 flex items-center justify-center text-xs text-zinc-600 hover:text-yellow-500 transition-colors">
+        <draggable 
+          v-if="ghostSlots[0]" 
+          v-model="ghostSlots[0]" 
+          v-bind="ghostSlotOptions" 
+          :item-key="getItemKey"
+          tag="div" 
+          class="w-full h-full flex items-center justify-center"
+          @change="(evt: any) => onGhostSlotChange(evt, 0)"
+        >
+          <template #item="{ element }">
+            <div class="hidden">{{ element }}</div>
+          </template>
+          <template #header>
+            <span class="pointer-events-none">拖入新建首句</span>
           </template>
         </draggable>
       </div>
 
-      <!-- 句子流 -->
-      <div>
-        <div class="text-sm text-zinc-500 mb-2 font-medium">句子流 (Sentence Flow)</div>
+      <div v-for="(sentence, index) in localSentences" :key="sentence.id">
+        <div :class="['rounded border-l-4 p-3 transition-colors mb-2', typeColors[sentence.type] || typeColors.text]">
+          <div class="flex justify-between items-center mb-2 select-none">
+            <span class="text-sm text-zinc-500 font-mono">#{{ index + 1 }}</span>
+            <span class="text-[10px] text-zinc-500 px-1.5 py-0.5 bg-black/20 rounded">
+              {{ sentence.type }}
+            </span>
+          </div>
 
-        <!-- 首位幽灵槽位 -->
-        <div
-          class="ghost-slot h-8 border-2 border-dashed border-zinc-700 hover:border-yellow-500/50 hover:bg-yellow-500/10 rounded mb-2 flex items-center justify-center text-xs text-zinc-600 hover:text-yellow-500 transition-colors">
-          <draggable v-if="ghostSlots[0]" v-model="ghostSlots[0]" v-bind="ghostSlotOptions" :item-key="getItemKey"
-            tag="div" class="w-full h-full flex items-center justify-center"
-            @change="(evt: any) => onGhostSlotChange(evt, 0)">
-            <template #item="{ element }">
-              <div class="hidden">{{ element }}</div>
-            </template>
-            <template #header>
-              <span class="pointer-events-none">拖入新建首句</span>
+          <draggable 
+            v-model="sentence.line_ids" 
+            v-bind="dragOptions" 
+            :item-key="getItemKey" 
+            tag="div"
+            handle=".drag-handle" 
+            class="flex flex-wrap items-center gap-2 min-h-8" 
+            @end="onDragEnd"
+          >
+            <template #item="{ element: lineId }">
+              <div 
+                class="drag-item h-8 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-sm flex items-center gap-1 shadow-sm select-none border border-zinc-700 ring-1 ring-inset ring-transparent hover:ring-blue-500/50"
+                :title="getLineContent(lineId)" 
+                @mouseenter="emit('hover-line', lineId)"
+                @mouseleave="emit('leave-line')"
+              >
+                <span class="drag-handle cursor-grab active:cursor-grabbing text-zinc-500 hover:text-white px-1 font-bold text-sm">⋮⋮</span>
+                <span>L{{ getLineIndex(lineId) }}</span>
+              </div>
             </template>
           </draggable>
         </div>
 
-        <!-- 句子列表 -->
-        <div v-for="(sentence, index) in localSentences" :key="sentence.id">
-          <div :class="['rounded border-l-4 p-3 transition-colors mb-2', typeColors[sentence.type] || typeColors.text]">
-            <div class="flex justify-between items-center mb-2 select-none">
-              <span class="text-sm text-zinc-500 font-mono">#{{ index + 1 }}</span>
-              <span class="text-[10px] text-zinc-500 px-1.5 py-0.5 bg-black/20 rounded">
-                {{ sentence.type }}
-              </span>
-            </div>
-
-            <draggable v-model="sentence.line_ids" v-bind="dragOptions" :item-key="getItemKey" tag="div"
-              handle=".drag-handle" class="flex flex-wrap items-center gap-2 min-h-8" @end="onDragEnd">
-              <template #item="{ element: lineId }">
-                <div
-                  class="drag-item h-8 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-sm flex items-center gap-1 shadow-sm select-none border border-zinc-700 ring-1 ring-inset ring-transparent hover:ring-blue-500/50"
-                  :title="getLineContent(lineId)" @mouseenter="emit('hover-line', lineId)"
-                  @mouseleave="emit('leave-line')">
-                  <span
-                    class="drag-handle cursor-grab active:cursor-grabbing text-zinc-500 hover:text-white px-1 font-bold text-sm">⋮⋮</span>
-                  <span>L{{ getLineIndex(lineId) }}</span>
-                </div>
-              </template>
-            </draggable>
-          </div>
-
-          <!-- 句子间幽灵槽位 -->
-          <div
-            class="ghost-slot h-8 border-2 border-dashed border-zinc-700 hover:border-yellow-500/50 hover:bg-yellow-500/10 rounded mb-2 flex items-center justify-center text-xs text-zinc-600 hover:text-yellow-500 transition-colors">
-            <draggable v-if="ghostSlots[index + 1]" v-model="ghostSlots[index + 1]" v-bind="ghostSlotOptions" :item-key="getItemKey" tag="div"
-              class="w-full h-full flex items-center justify-center"
-              @change="(evt: any) => onGhostSlotChange(evt, index + 1)">
-              <template #item="{ element }">
-                <div class="hidden">{{ element }}</div>
-              </template>
-              <template #header>
-                <span class="pointer-events-none">拖入新建句子</span>
-              </template>
-            </draggable>
-          </div>
+        <div class="ghost-slot h-8 border-2 border-dashed border-zinc-700 hover:border-yellow-500/50 hover:bg-yellow-500/10 rounded mb-2 flex items-center justify-center text-xs text-zinc-600 hover:text-yellow-500 transition-colors">
+          <draggable 
+            v-if="ghostSlots[index + 1]" 
+            v-model="ghostSlots[index + 1]" 
+            v-bind="ghostSlotOptions" 
+            :item-key="getItemKey" 
+            tag="div"
+            class="w-full h-full flex items-center justify-center"
+            @change="(evt: any) => onGhostSlotChange(evt, index + 1)"
+          >
+            <template #item="{ element }">
+              <div class="hidden">{{ element }}</div>
+            </template>
+            <template #header>
+              <span class="pointer-events-none">拖入新建句子</span>
+            </template>
+          </draggable>
         </div>
       </div>
-
+      
     </div>
   </div>
 </template>

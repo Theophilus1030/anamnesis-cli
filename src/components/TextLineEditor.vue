@@ -341,24 +341,44 @@ function handleCanvasMouseMove(e: MouseEvent) {
 
   const bounds = polygonBounds.value
   const glyph = editingLine.value.glyphs[selectedGlyphIndex.value]
+  const isLastGlyph = selectedGlyphIndex.value === editingLine.value.glyphs.length - 1
 
   const realX = x + bounds.minX
   const realY = y + bounds.minY
 
   switch (draggingCorner.value) {
     case 'tl':
+      // 左上角：调整 hpos 和 vpos
+      const oldHpos = glyph.hpos
       glyph.hpos = Math.round(realX)
       glyph.vpos = Math.round(realY)
+      // 如果是最后一个字符，同时调整宽度保持右边界不变
+      if (isLastGlyph) {
+        glyph.width = Math.max(10, glyph.width + (oldHpos - glyph.hpos))
+      }
       break
     case 'tr':
+      // 右上角：调整 vpos，如果是最后一个字符还要调整宽度
       glyph.vpos = Math.round(realY)
+      if (isLastGlyph) {
+        glyph.width = Math.max(10, Math.round(realX - glyph.hpos))
+      }
       break
     case 'bl':
+      // 左下角：调整 hpos 和 height
+      const oldHposbl = glyph.hpos
       glyph.hpos = Math.round(realX)
-      glyph.height = Math.round(realY - glyph.vpos)
+      glyph.height = Math.max(10, Math.round(realY - glyph.vpos))
+      if (isLastGlyph) {
+        glyph.width = Math.max(10, glyph.width + (oldHposbl - glyph.hpos))
+      }
       break
     case 'br':
-      glyph.height = Math.round(realY - glyph.vpos)
+      // 右下角：调整 height，如果是最后一个字符还要调整宽度
+      glyph.height = Math.max(10, Math.round(realY - glyph.vpos))
+      if (isLastGlyph) {
+        glyph.width = Math.max(10, Math.round(realX - glyph.hpos))
+      }
       break
   }
 
@@ -475,6 +495,29 @@ function insertCharacterAfter() {
 
   // 选中新插入的字符
   selectedGlyphIndex.value = selectedGlyphIndex.value + 1
+
+  nextTick(() => drawCanvas())
+}
+
+function createFirstCharacter() {
+  if (!editingLine.value) return
+  if (editingLine.value.glyphs.length > 0) return
+
+  // 使用多边形边界来估算位置
+  const bounds = polygonBounds.value
+
+  const newGlyph: Glyph = {
+    id: `glyph_${Date.now()}`,
+    content: '?',
+    hpos: bounds.minX + 20,
+    vpos: bounds.minY + 20,
+    width: 30,
+    height: Math.min(50, bounds.height - 40),
+    lineId: editingLine.value.id
+  }
+
+  editingLine.value.glyphs.push(newGlyph)
+  selectedGlyphIndex.value = 0
 
   nextTick(() => drawCanvas())
 }
@@ -632,11 +675,16 @@ watch(selectedGlyphIndex, () => {
             断开到后一行 →
           </button>
         </div>
-
+        <!-- 空行提示 -->
+        <div v-else-if="editingLine.glyphs.length === 0" class="mb-4 text-center text-zinc-500 text-sm">
+          请先添加字符
+        </div>
         <!-- 字符列表 -->
         <div class="mb-4 p-3 bg-zinc-800 rounded-lg">
           <div class="text-zinc-500 text-sm mb-2">点击字符进行选择和编辑:</div>
-          <div class="flex flex-wrap gap-1">
+
+          <!-- 有字符时显示字符列表 -->
+          <div v-if="editingLine.glyphs.length > 0" class="flex flex-wrap gap-1">
             <button v-for="(glyph, index) in editingLine.glyphs" :key="glyph.id" :class="[
               'px-2 py-1 rounded text-lg transition-colors',
               selectedGlyphIndex === index
@@ -644,6 +692,14 @@ watch(selectedGlyphIndex, () => {
                 : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'
             ]" @click="selectGlyph(index)">
               {{ glyph.content }}
+            </button>
+          </div>
+
+          <!-- 空行时显示添加按钮 -->
+          <div v-else class="flex flex-col items-center gap-2 py-4">
+            <span class="text-zinc-500 text-sm">该行没有字符</span>
+            <button class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-base" @click="createFirstCharacter">
+              + 添加首个字符
             </button>
           </div>
         </div>

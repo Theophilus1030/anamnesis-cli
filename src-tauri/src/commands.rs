@@ -2,6 +2,8 @@ use crate::db::Database;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use rusqlite::OptionalExtension;
+use std::path::PathBuf;
+use std::process::Command;
 #[derive(Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
@@ -53,6 +55,19 @@ pub fn delete_project(db: State<Database>, id: String) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM projects WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_project_name(db: State<Database>, id: String, name: String) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    
+    conn.execute(
+        "UPDATE projects SET name = ?1 WHERE id = ?2",
+        [&name, &id],
+    )
+    .map_err(|e| e.to_string())?;
+    
     Ok(())
 }
 
@@ -109,6 +124,22 @@ pub fn delete_page(db: State<Database>, id: String) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM pages WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_page_name(db: State<Database>, id: String, name: String) -> Result<(), String> {
+    // 1. 获取数据库连接锁
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+
+    // 2. 执行更新语句
+    // 注意 SQL 参数顺序：name 对应 ?1，id 对应 ?2
+    conn.execute(
+        "UPDATE pages SET name = ?1 WHERE id = ?2",
+        [&name, &id],
+    )
+    .map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -222,3 +253,150 @@ pub fn get_sentence(db: State<Database>, page_id: String) -> Result<Option<Strin
     
     Ok(data)
 }
+
+
+
+
+
+/// 获取资源目录路径
+fn get_resource_dir() -> Result<PathBuf, String> {
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("获取exe路径失败: {}", e))?
+        .parent()
+        .ok_or("无法获取父目录")?
+        .to_path_buf();
+
+    // 尝试多个可能的路径
+    let possible_paths = vec![
+        // 打包后 Windows: exe同级的resources目录
+        exe_dir.join("resources"),
+        // 打包后 macOS: Resources目录
+        exe_dir.join("../Resources/resources"),
+        // 开发模式
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join("src-tauri")
+            .join("resources"),
+    ];
+
+    possible_paths
+        .into_iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| "找不到资源目录".to_string())
+}
+
+/// 获取默认模型路径
+fn get_default_model_path(model_name: &str) -> Result<String, String> {
+    let resource_dir = get_resource_dir()?;
+    let model_path = resource_dir.join(model_name);
+    
+    if model_path.exists() {
+        Ok(model_path.to_string_lossy().to_string())
+    } else {
+        Err(format!("默认模型不存在: {}", model_path.display()))
+    }
+}
+
+#[tauri::command]
+pub async fn run_kraken_ocr(
+    image_path: String,
+    model_path: Option<String>,      // 改为 Option
+    seg_model_path: Option<String>,  // 改为 Option
+) -> Result<String, String> {
+    // 如果没有指定模型，使用默认模型
+    let model = match model_path {
+        Some(p) if !p.is_empty() => p,
+        _ => get_default_model_path("catmus-medieval.mlmodel")?,
+    };
+
+    let seg_model = match seg_model_path {
+        Some(p) if !p.is_empty() => p,
+        _ => get_default_model_path("blla.mlmodel")?,
+    };
+
+    // 获取可执行文件所在目录
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("获取exe路径失败: {}", e))?
+        .parent()
+        .ok_or("无法获取父目录")?
+        .to_path_buf();
+
+    // 尝试多个可能的路径
+    let possible_paths = vec![
+        // 开发模式：src-tauri/binaries/
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join("src-tauri")
+            .join("binaries")
+            .join("kraken_sidecar-x86_64-pc-windows-msvc.exe"),
+        // 开发模式2：直接在 binaries/
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join("binaries")
+            .join("kraken_sidecar-x86_64-pc-windows-msvc.exe"),
+        // 打包后：与 exe 同目录
+        exe_dir.join("kraken_sidecar-x86_64-pc-windows-msvc.exe"),
+        // 打包后：binaries 子目录
+        exe_dir.join("binaries").join("kraken_sidecar-x86_64-pc-windows-msvc.exe"),
+    ];
+
+    let sidecar_path = possible_paths
+        .iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| {
+            format!(
+                "找不到 sidecar，尝试过的路径:\n{}",
+                possible_paths
+                    .iter()
+                    .map(|p| format!("  - {}", p.display()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        })?;
+
+    // 执行命令
+    let output = Command::new(sidecar_path)
+        .arg(&image_path)
+        .arg("--model")
+        .arg(&model)
+        .arg("--seg-model")
+        .arg(&seg_model)
+        .output()
+        .map_err(|e| format!("执行失败: {}", e))?;
+
+    if output.status.success() {
+        String::from_utf8(output.stdout)
+            .map_err(|e| format!("输出编码错误: {}", e))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("进程错误 (code {:?}): {}", output.status.code(), stderr))
+    }
+}
+
+/// 检查默认模型是否存在
+#[tauri::command]
+pub fn check_default_models() -> Result<DefaultModelsStatus, String> {
+    let resource_dir = get_resource_dir().ok();
+    
+    let rec_model_exists = resource_dir
+        .as_ref()
+        .map(|d| d.join("catmus-medieval.mlmodel").exists())
+        .unwrap_or(false);
+    
+    let seg_model_exists = resource_dir
+        .as_ref()
+        .map(|d| d.join("blla.mlmodel").exists())
+        .unwrap_or(false);
+
+    Ok(DefaultModelsStatus {
+        recognition_model: rec_model_exists,
+        segmentation_model: seg_model_exists,
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct DefaultModelsStatus {
+    recognition_model: bool,
+    segmentation_model: bool,
+}
+
