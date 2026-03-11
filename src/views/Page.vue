@@ -2,8 +2,8 @@
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
-import { open, save } from '@tauri-apps/plugin-dialog'
-import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
+import { open, save, ask } from '@tauri-apps/plugin-dialog'
+import { readTextFile } from '@tauri-apps/plugin-fs'
 import TopologyPanel from '@/components/TopologyPanel.vue'
 import SentenceEditor from '@/components/SentenceEditor.vue'
 import TextLineEditor from '@/components/TextLineEditor.vue'
@@ -68,6 +68,8 @@ interface Glyph {
   width: number
   height: number
   lineId: string
+  wordId: string 
+  isSpace?: boolean
 }
 
 interface Line {
@@ -383,7 +385,7 @@ function parseAltoXml(xml: string) {
   const parser = new DOMParser()
   const doc = parser.parseFromString(xml, 'text/xml')
 
-  // 解析 Regions
+  // 1. 解析 Regions (保持不变)
   const textBlocks = doc.querySelectorAll('TextBlock')
   const regionList: Region[] = []
   textBlocks.forEach(block => {
@@ -397,9 +399,12 @@ function parseAltoXml(xml: string) {
   })
   regions.value = regionList
 
-  // 解析 Lines
+  // 2. 解析 Lines (核心重构)
   const textLines = doc.querySelectorAll('TextLine')
   const lineList: Line[] = []
+
+  // 用于跨行单词拼接的临时状态
+  let pendingHyphenWordId: string | null = null
 
   textLines.forEach(line => {
     const lineId = line.getAttribute('ID') || ''
@@ -412,20 +417,110 @@ function parseAltoXml(xml: string) {
       : []
 
     const glyphs: Glyph[] = []
-    line.querySelectorAll('Glyph').forEach(g => {
-      glyphs.push({
-        id: g.getAttribute('ID') || '',
-        content: g.getAttribute('CONTENT') || '',
-        hpos: parseInt(g.getAttribute('HPOS') || '0'),
-        vpos: parseInt(g.getAttribute('VPOS') || '0'),
-        width: parseInt(g.getAttribute('WIDTH') || '0'),
-        height: parseInt(g.getAttribute('HEIGHT') || '0'),
-        lineId
-      })
+    
+    // 遍历 TextLine 的直接子节点 (String 或 SP)
+    Array.from(line.children).forEach(child => {
+      const tagName = child.tagName
+
+      if (tagName === 'SP') {
+        // --- 处理空格 ---
+        glyphs.push({
+          id: child.getAttribute('ID') || `sp_${crypto.randomUUID()}`,
+          content: ' ', // 显示为空格
+          hpos: parseInt(child.getAttribute('HPOS') || '0'),
+          vpos: parseInt(child.getAttribute('VPOS') || '0'),
+          width: parseInt(child.getAttribute('WIDTH') || '0'),
+          height: 0,
+          lineId,
+          wordId: `word_sp_${crypto.randomUUID()}`, // 空格拥有独立的 wordId
+          isSpace: true
+        })
+      } 
+      else if (tagName === 'String') {
+        // --- 处理单词 ---
+        const subsType = child.getAttribute('SUBS_TYPE')
+        let currentWordId = `word_${child.getAttribute('ID') || crypto.randomUUID()}`
+
+        // 连字符逻辑：处理跨行合并
+        if (subsType === 'HypPart1') {
+          // 如果是前半部分，记录这个 ID，留给下一行用
+          pendingHyphenWordId = currentWordId
+        } else if (subsType === 'HypPart2') {
+          // 如果是后半部分，且有挂起的 ID，则继承它 (实现逻辑连接)
+          if (pendingHyphenWordId) {
+            currentWordId = pendingHyphenWordId
+            pendingHyphenWordId = null // 消费掉
+          }
+        } else {
+          // 普通单词，清空挂起状态（防止错配）
+          // pendingHyphenWordId = null // 可选：视容错策略而定
+        }
+
+        // 解析 String 内部的 Glyph
+        const childGlyphs = child.querySelectorAll('Glyph')
+        if (childGlyphs.length > 0) {
+          childGlyphs.forEach(g => {
+            glyphs.push({
+              id: g.getAttribute('ID') || '',
+              content: g.getAttribute('CONTENT') || '',
+              hpos: parseInt(g.getAttribute('HPOS') || '0'),
+              vpos: parseInt(g.getAttribute('VPOS') || '0'),
+              width: parseInt(g.getAttribute('WIDTH') || '0'),
+              height: parseInt(g.getAttribute('HEIGHT') || '0'),
+              lineId,
+              wordId: currentWordId,
+              isSpace: false
+            })
+          })
+        } else {
+          // 容错：如果 String 里没有 Glyph 标签 (也就是紧凑模式)，通过 CONTENT 自动生成伪 Glyph
+          // 这种情况在中世纪排版少见，但为了健壮性可以加上
+          const content = child.getAttribute('CONTENT') || ''
+          const sHpos = parseInt(child.getAttribute('HPOS') || '0')
+          const sVpos = parseInt(child.getAttribute('VPOS') || '0')
+          const sWidth = parseInt(child.getAttribute('WIDTH') || '0')
+          const sHeight = parseInt(child.getAttribute('HEIGHT') || '0')
+          // 简单平均分配宽度
+          const charWidth = content.length > 0 ? sWidth / content.length : 0
+          
+          for (let i = 0; i < content.length; i++) {
+            glyphs.push({
+              id: `${child.getAttribute('ID')}_g_${i}`,
+              content: content[i],
+              hpos: sHpos + (i * charWidth),
+              vpos: sVpos,
+              width: charWidth,
+              height: sHeight,
+              lineId,
+              wordId: currentWordId,
+              isSpace: false
+            })
+          }
+        }
+      }
     })
 
     lineList.push({ id: lineId, baseline, polygon, glyphs })
   })
+
+  // === 新增：强制按照物理 Y 坐标（VPOS / Polygon顶部）从上到下排序 ===
+  // 这将修复 Kraken 输出 XML 标签乱序导致的前端行列表顺序错乱问题
+  lineList.sort((a, b) => {
+    // 获取 a 的最小 Y 坐标
+    let aMinY = Infinity;
+    a.polygon.forEach(p => { if (p[1] < aMinY) aMinY = p[1]; });
+    if (aMinY === Infinity && a.glyphs.length > 0) aMinY = a.glyphs[0].vpos;
+    if (aMinY === Infinity) aMinY = 0;
+
+    // 获取 b 的最小 Y 坐标
+    let bMinY = Infinity;
+    b.polygon.forEach(p => { if (p[1] < bMinY) bMinY = p[1]; });
+    if (bMinY === Infinity && b.glyphs.length > 0) bMinY = b.glyphs[0].vpos;
+    if (bMinY === Infinity) bMinY = 0;
+
+    return aMinY - bMinY;
+  });
+  // =========================================================
 
   lines.value = lineList
 }
@@ -1387,8 +1482,13 @@ function redo() {
 async function deleteLine() {
   if (!selectedLineId.value) return
 
-  // 弹窗确认（可选）
-  if (!confirm("确定要删除选中的行吗？")) return
+  // 使用 Tauri 原生对话框 (异步)
+  const yes = await ask('确定要删除选中的行吗？', { 
+    title: '确认删除',
+    kind: 'warning'
+  });
+
+  if (!yes) return
 
   saveHistory()
   lines.value = lines.value.filter(l => l.id !== selectedLineId.value)
@@ -1398,7 +1498,7 @@ async function deleteLine() {
   selectedGlyphId.value = null
 
   // 保存到后端
-  await saveToBackend() // <--- 新增这行
+  await saveToBackend()
 
   drawCanvas()
 }
@@ -1442,8 +1542,52 @@ async function saveToBackend() {
 
   const parser = new DOMParser()
   const doc = parser.parseFromString(altoXml.value, "text/xml")
-
   const ns = doc.documentElement.getAttribute('xmlns')
+
+  // 辅助：预计算哪些 wordId 是跨行的
+  // Map<wordId, Set<lineId>>
+  const wordLineMap = new Map<string, Set<string>>()
+  lines.value.forEach(line => {
+    line.glyphs.forEach(g => {
+      if (g.isSpace) return
+      if (!wordLineMap.has(g.wordId)) {
+        wordLineMap.set(g.wordId, new Set())
+      }
+      wordLineMap.get(g.wordId)?.add(line.id)
+    })
+  })
+
+  // 辅助：获取完整的单词内容（用于 SUBS_CONTENT）
+const getFullWordContent = (targetWordId: string): string => {
+    let content = ''
+    const globalOrder = getGlobalLineOrder()
+    
+    // 1. 优先按拓扑逻辑顺序拼接
+    globalOrder.forEach(lineId => {
+      const l = lines.value.find(x => x.id === lineId)
+      if (l) {
+        l.glyphs.forEach(g => {
+          if (g.wordId === targetWordId && !g.isSpace) {
+            content += g.content
+          }
+        })
+      }
+    })
+    
+    // 2. 兜底：如果有些行还没分配到句子中，按原始顺序追加
+    lines.value.forEach(l => {
+      if (!globalOrder.includes(l.id)) {
+        l.glyphs.forEach(g => {
+          if (g.wordId === targetWordId && !g.isSpace) {
+            content += g.content
+          }
+        })
+      }
+    })
+    
+    // 移除所有的连字符（全局清理，防止中间残留）
+    return content.replace(/[-=]/g, '')
+  }
 
   const findLineNode = (id: string) => {
     let node = doc.getElementById(id)
@@ -1457,170 +1601,201 @@ async function saveToBackend() {
   }
 
   let textBlock = doc.getElementsByTagName('TextBlock')[0]
-  if (!textBlock) {
-    console.error("XML 中未找到 TextBlock，无法保存")
-    return
-  }
+  if (!textBlock) return
 
-  // 遍历前端的数据，更新 XML
+  // 遍历前端数据更新 XML
   lines.value.forEach(lineData => {
     let lineNode = findLineNode(lineData.id)
 
-    if (lineNode) {
-      // --- 更新已有 Line ---
+    // 如果是新行，创建节点
+    if (!lineNode) {
+      lineNode = doc.createElementNS(ns, 'TextLine')
+      lineNode.setAttribute('ID', lineData.id)
+      textBlock.appendChild(lineNode)
+    }
 
-      // 更新 Baseline
-      if (lineData.baseline && lineData.baseline.length > 0) {
-        lineNode.setAttribute('BASELINE', pointsToString(lineData.baseline))
-      } else {
-        lineNode.removeAttribute('BASELINE')
-      }
-
-      // 更新 Polygon
-      let shapeNode = lineNode.querySelector(':scope > Shape')
-      if (!shapeNode) {
-        shapeNode = doc.createElementNS(ns, 'Shape')
-        lineNode.insertBefore(shapeNode, lineNode.firstChild)
-      }
-
-      let polyNode = shapeNode.querySelector(':scope > Polygon')
-      if (!polyNode) {
-        polyNode = doc.createElementNS(ns, 'Polygon')
-        shapeNode.appendChild(polyNode)
-      }
-
-      polyNode.setAttribute('POINTS', pointsToString(lineData.polygon))
-
-      // --- 重建 String 和 Glyph 结构 ---
-      // 删除所有现有的 String 节点
-      const existingStrings = Array.from(lineNode.getElementsByTagName('String'))
-      existingStrings.forEach(s => s.parentNode?.removeChild(s))
-
-      // 删除所有现有的 SP 节点（空格）
-      const existingSPs = Array.from(lineNode.getElementsByTagName('SP'))
-      existingSPs.forEach(s => s.parentNode?.removeChild(s))
-
-      // 根据前端数据重建 String 和 Glyph
-      // 简化处理：将所有 Glyph 放在一个 String 中
-      if (lineData.glyphs.length > 0) {
-        const newString = doc.createElementNS(ns, 'String')
-        newString.setAttribute('ID', `string_${lineData.id}`)
-
-        // 计算 String 的边界
-        let minHpos = Infinity, minVpos = Infinity
-        let maxHpos = -Infinity, maxVpos = -Infinity
-
-        lineData.glyphs.forEach(g => {
-          minHpos = Math.min(minHpos, g.hpos)
-          minVpos = Math.min(minVpos, g.vpos)
-          maxHpos = Math.max(maxHpos, g.hpos + (g.width || 20))
-          maxVpos = Math.max(maxVpos, g.vpos + g.height)
-        })
-
-        newString.setAttribute('HPOS', String(Math.round(minHpos)))
-        newString.setAttribute('VPOS', String(Math.round(minVpos)))
-        newString.setAttribute('WIDTH', String(Math.round(maxHpos - minHpos)))
-        newString.setAttribute('HEIGHT', String(Math.round(maxVpos - minVpos)))
-
-        // 拼接内容
-        const content = lineData.glyphs.map(g => g.content).join('')
-        newString.setAttribute('CONTENT', content)
-        newString.setAttribute('WC', '1.0')
-
-        // 创建 Glyph 节点
-        lineData.glyphs.forEach((glyphData, idx) => {
-          const newGlyph = doc.createElementNS(ns, 'Glyph')
-          newGlyph.setAttribute('ID', glyphData.id || `glyph_${lineData.id}_${idx}`)
-          newGlyph.setAttribute('CONTENT', glyphData.content)
-          newGlyph.setAttribute('HPOS', String(Math.round(glyphData.hpos)))
-          newGlyph.setAttribute('VPOS', String(Math.round(glyphData.vpos)))
-          newGlyph.setAttribute('WIDTH', String(Math.round(glyphData.width || 0)))
-          newGlyph.setAttribute('HEIGHT', String(Math.round(glyphData.height)))
-          newGlyph.setAttribute('GC', '1.0')
-
-          // 创建 Glyph 的 Shape
-          const glyphShape = doc.createElementNS(ns, 'Shape')
-          const glyphPoly = doc.createElementNS(ns, 'Polygon')
-          // 简单矩形
-          const x = glyphData.hpos
-          const y = glyphData.vpos
-          const w = glyphData.width || 0
-          const h = glyphData.height
-          glyphPoly.setAttribute('POINTS', `${x} ${y} ${x} ${y + h} ${x + w} ${y + h} ${x + w} ${y}`)
-          glyphShape.appendChild(glyphPoly)
-          newGlyph.appendChild(glyphShape)
-
-          newString.appendChild(newGlyph)
-        })
-
-        lineNode.appendChild(newString)
-      }
-
+    // 更新 Baseline
+    if (lineData.baseline && lineData.baseline.length > 0) {
+      lineNode.setAttribute('BASELINE', pointsToString(lineData.baseline))
     } else {
-      // --- 新增 Line ---
-      const newLine = doc.createElementNS(ns, 'TextLine')
-      newLine.setAttribute('ID', lineData.id)
+      lineNode.removeAttribute('BASELINE')
+    }
 
-      if (lineData.baseline.length > 0) {
-        newLine.setAttribute('BASELINE', pointsToString(lineData.baseline))
+    // 更新 Polygon
+    let shapeNode = lineNode.querySelector(':scope > Shape')
+    if (!shapeNode) {
+      shapeNode = doc.createElementNS(ns, 'Shape')
+      lineNode.insertBefore(shapeNode, lineNode.firstChild)
+    }
+    let polyNode = shapeNode.querySelector(':scope > Polygon')
+    if (!polyNode) {
+      polyNode = doc.createElementNS(ns, 'Polygon')
+      shapeNode.appendChild(polyNode)
+    }
+    polyNode.setAttribute('POINTS', pointsToString(lineData.polygon))
+
+    // --- 重构子节点 (String / SP) ---
+    // 1. 清空现有 String/SP
+    const strings = Array.from(lineNode.getElementsByTagName('String'))
+    strings.forEach(s => s.parentNode?.removeChild(s))
+    const sps = Array.from(lineNode.getElementsByTagName('SP'))
+    sps.forEach(s => s.parentNode?.removeChild(s))
+
+    // 2. 根据 wordId 聚类重建
+    if (lineData.glyphs.length > 0) {
+      let currentGroupWordId = lineData.glyphs[0].wordId
+      let currentGroupGlyphs: Glyph[] = []
+
+      const flushGroup = () => {
+        if (currentGroupGlyphs.length === 0) return
+
+        const firstGlyph = currentGroupGlyphs[0]
+        
+        // A. 如果是空格
+        if (firstGlyph.isSpace) {
+          const spNode = doc.createElementNS(ns, 'SP')
+          spNode.setAttribute('ID', firstGlyph.id) // 使用 glyph ID
+          spNode.setAttribute('HPOS', String(firstGlyph.hpos))
+          spNode.setAttribute('VPOS', String(firstGlyph.vpos))
+          spNode.setAttribute('WIDTH', String(firstGlyph.width))
+          lineNode!.appendChild(spNode)
+        } 
+        // B. 如果是单词
+        else {
+          const stringNode = doc.createElementNS(ns, 'String')
+          stringNode.setAttribute('ID', `str_${firstGlyph.id}`) // 生成 String ID
+          
+          // 计算 String 边界
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+          let content = ''
+          currentGroupGlyphs.forEach(g => {
+            minX = Math.min(minX, g.hpos)
+            minY = Math.min(minY, g.vpos)
+            maxX = Math.max(maxX, g.hpos + g.width)
+            maxY = Math.max(maxY, g.vpos + g.height)
+            content += g.content
+          })
+          
+          stringNode.setAttribute('HPOS', String(minX))
+          stringNode.setAttribute('VPOS', String(minY))
+          stringNode.setAttribute('WIDTH', String(maxX - minX))
+          stringNode.setAttribute('HEIGHT', String(maxY - minY))
+          stringNode.setAttribute('CONTENT', content)
+          stringNode.setAttribute('WC', '1.0')
+
+          // --- 核心：处理 SUBS 属性 ---
+          const linesSet = wordLineMap.get(currentGroupWordId)
+          if (linesSet && linesSet.size > 1) {
+            // 这个单词跨行了
+            const fullContent = getFullWordContent(currentGroupWordId)
+            stringNode.setAttribute('SUBS_CONTENT', fullContent)
+
+            // --- 修复：按全局阅读顺序找第一次出现的行 ---
+            let firstLineId: string | null = null
+            const globalOrder = getGlobalLineOrder()
+            
+            // 找逻辑顺序的第一个
+            for (const lId of globalOrder) {
+              const l = lines.value.find(x => x.id === lId)
+              if (l && l.glyphs.some(g => g.wordId === currentGroupWordId)) {
+                firstLineId = lId
+                break
+              }
+            }
+            
+            // 兜底：如果不在句子里，用物理数组顺序
+            if (!firstLineId) {
+              for (const l of lines.value) {
+                if (l.glyphs.some(g => g.wordId === currentGroupWordId)) {
+                  firstLineId = l.id
+                  break
+                }
+              }
+            }
+
+            // 判断当前行是不是该单词出现的“逻辑第一行”
+            if (lineData.id === firstLineId) {
+               stringNode.setAttribute('SUBS_TYPE', 'HypPart1')
+            } else {
+               stringNode.setAttribute('SUBS_TYPE', 'HypPart2')
+            }
+          }
+          // ---------------------------
+
+          // 插入 Glyphs
+          currentGroupGlyphs.forEach(g => {
+            const gNode = doc.createElementNS(ns, 'Glyph')
+            gNode.setAttribute('ID', g.id)
+            gNode.setAttribute('CONTENT', g.content)
+            gNode.setAttribute('HPOS', String(g.hpos))
+            gNode.setAttribute('VPOS', String(g.vpos))
+            gNode.setAttribute('WIDTH', String(g.width))
+            gNode.setAttribute('HEIGHT', String(g.height))
+            gNode.setAttribute('GC', '1.0')
+            
+            // Shape
+            const shape = doc.createElementNS(ns, 'Shape')
+            const poly = doc.createElementNS(ns, 'Polygon')
+            const x = g.hpos, y = g.vpos, w = g.width, h = g.height
+            poly.setAttribute('POINTS', `${x} ${y} ${x} ${y+h} ${x+w} ${y+h} ${x+w} ${y}`)
+            shape.appendChild(poly)
+            gNode.appendChild(shape)
+            
+            stringNode.appendChild(gNode)
+          })
+
+          lineNode!.appendChild(stringNode)
+        }
       }
 
-      const newShape = doc.createElementNS(ns, 'Shape')
-      const newPoly = doc.createElementNS(ns, 'Polygon')
-      newPoly.setAttribute('POINTS', pointsToString(lineData.polygon))
-      newShape.appendChild(newPoly)
-      newLine.appendChild(newShape)
-
-      // 添加 Glyphs
-      if (lineData.glyphs.length > 0) {
-        const newString = doc.createElementNS(ns, 'String')
-        newString.setAttribute('ID', `string_${lineData.id}`)
-
-        const content = lineData.glyphs.map(g => g.content).join('')
-        newString.setAttribute('CONTENT', content)
-
-        lineData.glyphs.forEach((glyphData, idx) => {
-          const newGlyph = doc.createElementNS(ns, 'Glyph')
-          newGlyph.setAttribute('ID', glyphData.id || `glyph_${lineData.id}_${idx}`)
-          newGlyph.setAttribute('CONTENT', glyphData.content)
-          newGlyph.setAttribute('HPOS', String(Math.round(glyphData.hpos)))
-          newGlyph.setAttribute('VPOS', String(Math.round(glyphData.vpos)))
-          newGlyph.setAttribute('WIDTH', String(Math.round(glyphData.width || 0)))
-          newGlyph.setAttribute('HEIGHT', String(Math.round(glyphData.height)))
-          newGlyph.setAttribute('GC', '1.0')
-          newString.appendChild(newGlyph)
-        })
-
-        newLine.appendChild(newString)
+      // 循环聚类
+      for (let i = 0; i < lineData.glyphs.length; i++) {
+        const glyph = lineData.glyphs[i]
+        
+        // 如果 wordId 变了，或者是空格（空格自成一组），结算上一组
+        if (glyph.wordId !== currentGroupWordId || glyph.isSpace) {
+          flushGroup()
+          currentGroupWordId = glyph.wordId
+          currentGroupGlyphs = []
+        }
+        
+        currentGroupGlyphs.push(glyph)
+        
+        // 如果当前是空格，因为它自成一组，推入后要立刻结算，以便下一个字符开始新组
+        if (glyph.isSpace) {
+           flushGroup()
+           currentGroupGlyphs = []
+           // 重置 ID 为下一个字符的 ID (如果有)
+           if (i + 1 < lineData.glyphs.length) {
+             currentGroupWordId = lineData.glyphs[i+1].wordId
+           }
+        }
       }
-
-      textBlock.appendChild(newLine)
+      // 结算最后一组
+      flushGroup()
     }
   })
 
-  // 处理删除
+  // 处理删除的 Line
   const currentIds = new Set(lines.value.map(l => l.id))
-  const xmlLines = Array.from(doc.getElementsByTagName('TextLine'))
-
-  xmlLines.forEach(node => {
+  const finalXmlLines = Array.from(doc.getElementsByTagName('TextLine'))
+  finalXmlLines.forEach(node => {
     const id = node.getAttribute('ID')
     if (id && !currentIds.has(id)) {
       node.parentNode?.removeChild(node)
     }
   })
 
-  // 序列化回字符串
   const serializer = new XMLSerializer()
   const newXmlStr = serializer.serializeToString(doc)
-
   altoXml.value = newXmlStr
 
   try {
     await invoke('save_alto', { pageId, xml: newXmlStr })
-    console.log("保存成功！")
+    console.log("保存成功")
   } catch (e) {
-    console.error("保存失败:", e)
-    alert("保存到数据库失败: " + e)
+    console.error(e)
+    alert("保存失败: " + e)
   }
 }
 
@@ -1638,7 +1813,12 @@ async function exportAltoXml() {
   if (!filePath) return
 
   try {
-    await writeTextFile(filePath, altoXml.value)
+    // 修改这里：使用 Rust 后端指令 save_content
+    await invoke('save_content', { 
+      path: filePath, 
+      content: altoXml.value 
+    })
+    
     alert('导出成功')
   } catch (e) {
     alert('导出失败: ' + e)
@@ -1660,7 +1840,13 @@ async function exportSentenceJson() {
 
   try {
     const json = JSON.stringify(sentenceData.value, null, 2)
-    await writeTextFile(filePath, json)
+    
+    // 修改这里：使用 Rust 后端指令 save_content
+    await invoke('save_content', { 
+      path: filePath, 
+      content: json 
+    })
+    
     alert('导出成功')
   } catch (e) {
     alert('导出失败: ' + e)
@@ -1871,6 +2057,71 @@ async function handleSplitBefore(lineId: string, glyphIndex: number) {
   editingTextLine.value = null
 
   drawCanvas()
+}
+
+
+// 放在 handleSplitAfter 附近
+
+async function handleLinkSubs(lineId: string, wordId: string) {
+  const currentLine = lines.value.find(l => l.id === lineId)
+  if (!currentLine) return
+
+  let nextLineId: string | null = null
+
+  // 优先获取真实的全局逻辑顺序
+  const globalOrder = getGlobalLineOrder()
+  const globalIndex = globalOrder.indexOf(lineId)
+
+  if (globalIndex !== -1 && globalIndex < globalOrder.length - 1) {
+    // 根据拓扑逻辑找真正的下一行
+    nextLineId = globalOrder[globalIndex + 1]
+  } else {
+    // 兜底：如果是未分配的行，使用数组物理顺序
+    const rawIndex = lines.value.findIndex(l => l.id === lineId)
+    if (rawIndex !== -1 && rawIndex < lines.value.length - 1) {
+      nextLineId = lines.value[rawIndex + 1].id
+    }
+  }
+
+  if (!nextLineId) {
+    alert("找不到下一行，无法链接")
+    return
+  }
+
+  const nextLine = lines.value.find(l => l.id === nextLineId)
+  if (!nextLine) return
+
+  // 2. 找到下一行的第一个单词 (过滤掉开头的空格)
+  const firstWordGlyph = nextLine.glyphs.find(g => !g.isSpace)
+  
+  if (!firstWordGlyph) {
+    alert("下一行没有单词，无法链接")
+    return
+  }
+
+  const nextWordId = firstWordGlyph.wordId
+
+  // 3. 执行合并：将下一行该单词所有 Glyph 的 wordId 修改为当前行的 wordId
+  nextLine.glyphs.forEach(g => {
+    if (g.wordId === nextWordId) {
+      g.wordId = wordId
+    }
+  })
+
+  // 4. (可选) 自动去除当前行单词末尾的连字符
+  const currentWordGlyphs = currentLine.glyphs.filter(g => g.wordId === wordId)
+  const lastGlyph = currentWordGlyphs[currentWordGlyphs.length - 1]
+  if (lastGlyph && (lastGlyph.content === '-' || lastGlyph.content === '=')) {
+     const gIndex = currentLine.glyphs.indexOf(lastGlyph)
+     if (gIndex > -1) {
+       currentLine.glyphs.splice(gIndex, 1)
+     }
+  }
+
+  saveHistory()
+  await saveToBackend()
+  
+  alert("跨行合并成功")
 }
 
 async function handleUpdateSentenceFromEditor(data: { normalized: string; en: string; zh: string; type: 'text' | 'title' | 'note' }) {
@@ -2295,6 +2546,7 @@ onMounted(() => {
       :sentences="sentenceData?.sentences || []"
       :sentence="editingTextLine ? findSentenceByLineId(editingTextLine.id) : null" @close="closeTextLineEditor"
       @save="handleSaveTextLine" @split-after="handleSplitAfter" @split-before="handleSplitBefore"
+      @link-subs="handleLinkSubs"
       @update-sentence="handleUpdateSentenceFromEditor" />
   </div>
 

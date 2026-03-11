@@ -2,7 +2,7 @@
 
 ## 介绍
 
-这是一个古籍文献校对编辑器，集成了 `Kraken`，并且以 `CATMuS` 和 `blla` 作为默认识别与分割模型，用户也可以加载自己的模型。之后可以用编辑器识别，得到 `ALTO XML`，用户可以用编辑器调整多边形、基线，还可以对每个TextLine内部的字母做精细操作，并支持导出 `ALTO XML`，与 `eScriptorium` 兼容。
+这是一个古籍文献校对编辑器，通过集成 Kraken OCR 引擎与 CATMuS 模型，本工具允许用户在本地完成从图片到文本的自动化识别，并提供了一个的可视化编辑器。不同于普通的文本编辑器，它支持像素级的多边形（Polygon）与基线（Baseline）调整，并引入了独有的**“单词级（Word-level）”逻辑**，能够处理中世纪文本中常见的单词粘连、跨行断词（Hyphenation/SUBS）以及特殊的组合字符。所有数据均严格遵循 ALTO XML 标准，确保学术研究的数据合规性。
 
 ## 调试 \& 构建
 
@@ -37,6 +37,6 @@ pnpm tauri build
 
 这个项目是完全开源免费的，如果喜欢，可以投喂作者，非常感谢!
 
-BTC：bc1qmy0rxv2yglvpw2uelvfhv468us8fc5hr6y0wxw
-ETH：0x9B033C903ff37EE65B42bD72f0248B1eC32d0a7a
-Solana：2UbqTDCy97FFtXXXhZxq2imyrPyWaEDm1rNuBkyPzVDE
+BTC：bc1q7n500ksqg5005adyjzyzs0eamxzvzys0jgde84
+ETH：0xbDdBDc37631d40525cD86934Fa30D913a26CD056
+Solana：2GJ5H6PBYWXsYTd4YX2J27D6GzBawUiBwbaDkys5odVU

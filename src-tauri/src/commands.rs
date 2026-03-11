@@ -322,22 +322,24 @@ pub async fn run_kraken_ocr(
         .to_path_buf();
 
     // 尝试多个可能的路径
+    // 尝试多个可能的路径
     let possible_paths = vec![
-        // 开发模式：src-tauri/binaries/
+        // A. 开发环境 (必须带架构后缀)
         std::env::current_dir()
             .unwrap_or_default()
             .join("src-tauri")
             .join("binaries")
             .join("kraken_sidecar-x86_64-pc-windows-msvc.exe"),
-        // 开发模式2：直接在 binaries/
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join("binaries")
-            .join("kraken_sidecar-x86_64-pc-windows-msvc.exe"),
-        // 打包后：与 exe 同目录
+        
+        // B. 打包环境 - 情况1: Tauri 标准 externalBin (带后缀)
         exe_dir.join("kraken_sidecar-x86_64-pc-windows-msvc.exe"),
-        // 打包后：binaries 子目录
-        exe_dir.join("binaries").join("kraken_sidecar-x86_64-pc-windows-msvc.exe"),
+        
+        // C. 打包环境 - 情况2: 你的现状 (不带后缀) <--- 新增这行
+        exe_dir.join("kraken_sidecar.exe"),
+
+        // D. 备用: 如果在 resources/binaries 子目录下
+        exe_dir.join("resources").join("kraken_sidecar.exe"),
+        exe_dir.join("binaries").join("kraken_sidecar.exe"),
     ];
 
     let sidecar_path = possible_paths
@@ -400,3 +402,7 @@ pub struct DefaultModelsStatus {
     segmentation_model: bool,
 }
 
+#[tauri::command]
+pub fn save_content(path: String, content: String) -> Result<(), String> {
+    std::fs::write(path, content).map_err(|e| e.to_string())
+}

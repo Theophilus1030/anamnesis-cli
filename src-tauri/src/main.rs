@@ -31,7 +31,8 @@ fn main() {
             commands::run_kraken_ocr,
             commands::check_default_models,
             commands::update_page_name,
-            commands::update_project_name
+            commands::update_project_name,
+            commands::save_content
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
